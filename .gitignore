@@ -1,5 +1,5 @@
 __pycache__/
 .venv/
-data/*.csv
-data/declarations.json
+/data/**
+!/data/.keep
 .DS_Store
