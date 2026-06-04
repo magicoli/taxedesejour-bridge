@@ -239,8 +239,11 @@ def get_bookings(year: int, month: int) -> list[Booking]:
         if acc_ttc <= 0 and price_field > 0:
             acc_ttc = price_field
 
+        # Name: guestFirstName/guestName hold the real name; firstName/lastName
+        # are often empty in the v1 API. Fall back across both.
         guest = (
-            f"{row.get('firstName', '') or ''} {row.get('lastName', '') or ''}".strip()
+            " ".join(p for p in (row.get("guestFirstName"), row.get("guestName")) if p).strip()
+            or " ".join(p for p in (row.get("firstName"), row.get("lastName")) if p).strip()
             or "—"
         )
 
@@ -271,10 +274,21 @@ def get_bookings(year: int, month: int) -> list[Booking]:
 
 @dataclass
 class BookingGroup:
-    """One or more Beds24 bookings with identical dates, treated as one declaration."""
-    check_in: date
-    check_out: date
+    """Bookings of one client whose dates overlap, treated as a single declaration.
+
+    Dates span the full range (min check-in → max check-out). Amounts and
+    occupant counts are summed; the taxe is computed on these merged totals
+    (the way taxesejour.fr will, since we submit one declaration).
+    """
     bookings: list[Booking]
+
+    @property
+    def check_in(self) -> date:
+        return min(b.check_in for b in self.bookings)
+
+    @property
+    def check_out(self) -> date:
+        return max(b.check_out for b in self.bookings)
 
     @property
     def nights(self) -> int:
@@ -285,16 +299,17 @@ class BookingGroup:
         return [b.unit for b in self.bookings]
 
     @property
+    def client_name(self) -> str:
+        """Client name for control (first non-empty among the bookings)."""
+        return next((b.guest for b in self.bookings if b.guest and b.guest != "—"), "—")
+
+    @property
     def adults(self) -> int:
         return sum(b.adults for b in self.bookings)
 
     @property
     def children(self) -> int:
         return sum(b.children for b in self.bookings)
-
-    @property
-    def declared_amount(self) -> float:
-        return sum(b.declared_amount for b in self.bookings)
 
     @property
     def acc_amount_ttc(self) -> float:
@@ -309,8 +324,17 @@ class BookingGroup:
         return sum(b.taxe_in_invoice for b in self.bookings)
 
     @property
+    def declared_amount(self) -> float:
+        """Base HT computed on the MERGED totals (not summed per booking).
+
+        Matches how taxesejour.fr computes: one declaration, merged
+        adults/guests ratio applied to the base HT we submit.
+        """
+        return ht_from_total(self.total_received, self.adults, self.children)
+
+    @property
     def computed_taxe(self) -> float:
-        return sum(b.computed_taxe for b in self.bookings)
+        return taxe_sejour(self.declared_amount, self.adults, self.children)
 
     @property
     def is_platform(self) -> bool:
@@ -379,9 +403,22 @@ def _same_client(a: Booking, b: Booking) -> bool:
     return False
 
 
-def _cluster_by_client(bucket: list[Booking]) -> list[list[Booking]]:
-    """Union-find clustering of same-date bookings by client identity."""
-    n = len(bucket)
+def _overlap(a: Booking, b: Booking) -> bool:
+    """True if the two stays share at least one night (half-open intervals)."""
+    return a.check_in < b.check_out and b.check_in < a.check_out
+
+
+def group_bookings(bookings: list[Booking]) -> list[BookingGroup]:
+    """Merge bookings of the same client whose dates overlap into one declaration.
+
+    Two bookings are merged when they are the same client AND their date ranges
+    overlap (transitively, via union-find). The merged group spans min check-in
+    to max check-out, summing amounts and occupants.
+
+    Same client at non-overlapping dates → separate declarations.
+    Different clients → separate, even at identical dates.
+    """
+    n = len(bookings)
     parent = list(range(n))
 
     def find(i: int) -> int:
@@ -392,30 +429,18 @@ def _cluster_by_client(bucket: list[Booking]) -> list[list[Booking]]:
 
     for i in range(n):
         for j in range(i + 1, n):
-            if _same_client(bucket[i], bucket[j]):
+            a, b = bookings[i], bookings[j]
+            # Platform bookings are never merged — each is its own declaration
+            # handled by the platform, and they belong to distinct guests.
+            if a.is_platform or b.is_platform:
+                continue
+            if _same_client(a, b) and _overlap(a, b):
                 parent[find(i)] = find(j)
 
     from collections import defaultdict
     comps: dict[int, list[Booking]] = defaultdict(list)
-    for i, bk in enumerate(bucket):
+    for i, bk in enumerate(bookings):
         comps[find(i)].append(bk)
-    return list(comps.values())
 
-
-def group_by_dates(bookings: list[Booking]) -> list[BookingGroup]:
-    """Group bookings sharing exact dates AND the same client into one declaration.
-
-    Bookings at the same dates for different clients stay separate.
-    Overlapping-but-different dates are NOT merged (declaration limitation).
-    """
-    from collections import defaultdict
-    by_dates: dict[tuple, list[Booking]] = defaultdict(list)
-    for b in bookings:
-        by_dates[(b.check_in, b.check_out)].append(b)
-
-    groups: list[BookingGroup] = []
-    for (ci, co), bucket in by_dates.items():
-        for cluster in _cluster_by_client(bucket):
-            groups.append(BookingGroup(check_in=ci, check_out=co, bookings=cluster))
-
+    groups = [BookingGroup(bookings=c) for c in comps.values()]
     return sorted(groups, key=lambda g: (g.check_in, g.check_out))

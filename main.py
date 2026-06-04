@@ -19,7 +19,7 @@ from datetime import date
 from typing import Optional
 
 import state as st
-from beds24 import Booking, BookingGroup, get_bookings, group_by_dates, set_booking_custom1
+from beds24 import Booking, BookingGroup, get_bookings, group_bookings, set_booking_custom1
 from config import BEDS24_BOOKING_URL
 from taxesejour import TaxeSejourClient
 
@@ -63,6 +63,7 @@ class Row:
     check_out: date
     nights: int
     units: str              # "Moon+Sun"
+    client: str             # guest name (for control, not submitted to taxesejour)
     adults: int
     children: int
     ids_b24: str            # "81349082" or "81349082,71612097"
@@ -165,6 +166,7 @@ def _build_row(
         check_out          = g.check_out,
         nights             = g.nights,
         units              = "+".join(g.units),
+        client             = g.client_name,
         adults             = g.adults,
         children           = g.children,
         ids_b24            = ids_b24,
@@ -193,7 +195,7 @@ def process_month(
     write_beds24_note: bool,
 ) -> list[Row]:
     all_bookings = get_bookings(year, month)
-    all_groups   = group_by_dates(all_bookings)
+    all_groups   = group_bookings(all_bookings)
     rows         = [_build_row(g, records) for g in all_groups]
 
     if fill:
@@ -297,7 +299,7 @@ def _totals(rows: list[Row]) -> dict:
 def _render_terminal(rows: list[Row], acc: dict) -> None:
     HDR = (
         f"{'Début':8} {'Fin':8} {'N':>5}  "
-        f"{'Gîte(s)':18} {'Ad':>2} {'En':>2}  "
+        f"{'Gîte(s)':18} {'Client':18} {'Ad':>2} {'En':>2}  "
         f"{'ID Beds24':14} {'Origine':12}  "
         f"{'Brut':>9} {'TS Prov':>9}  "
         f"{'ID CANBT':10}  "
@@ -312,17 +314,17 @@ def _render_terminal(rows: list[Row], acc: dict) -> None:
         print(
             f"{r.check_in.strftime('%d/%m/%y'):8} {r.check_out.strftime('%d/%m/%y'):8}"
             f" {r.nights:>5}  "
-            f"{r.units:18} {r.adults:>2} {r.children:>2}  "
+            f"{_s(r.units, 18):18} {_s(r.client, 18):18} {r.adults:>2} {r.children:>2}  "
             f"{_s(r.ids_b24, 14):14} {r.origine:12}  "
             f"{_v(r.ttc_b24):>9} {_v(r.taxe_b24 or None):>9}  "
             f"{_s(r.id_ts, 10):10}  "
             f"{_v(r.base_ht):>9} {_v(r.taxe_sejour):>9} {_v(r.total):>9}  "
             f"{r.statut}"
         )
-    # prefix = 8+1+8+1+5+2+18+1+2+1+2+2+14+1+12+2 = 80 chars before money cols
+    # prefix = 8+1+8+1+5+2+18+1+18+1+2+1+2+2+14+1+12+2 = 99 chars before money cols
     print(SEP)
     print(
-        f"{'TOTAUX':80}"
+        f"{'TOTAUX':99}"
         f"{_v(acc['ttc']):>9} {_v(acc['taxe_b'] or None):>9}  "
         f"{'':10}  "
         f"{_v(acc['ht']):>9} {_v(acc['taxe_s']):>9} {_v(acc['total']):>9}"
@@ -334,7 +336,7 @@ def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
         return f"{x:.2f}".replace(".", ",") if x is not None else ""
 
     HEADERS = [
-        "Début", "Fin", "Nuits", "Gîte(s)", "Adultes", "Enfants",
+        "Début", "Fin", "Nuits", "Gîte(s)", "Client", "Adultes", "Enfants",
         "ID Beds24", "Origine", "Brut", "TaxeProv", "ID Taxesejour",
         "Base HT", "Taxe Séjour", "Total", "Statut",
     ]
@@ -344,7 +346,7 @@ def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
         for r in rows:
             w.writerow([
                 r.check_in.strftime("%d/%m/%Y"), r.check_out.strftime("%d/%m/%Y"),
-                r.nights, r.units, r.adults, r.children,
+                r.nights, r.units, r.client, r.adults, r.children,
                 r.ids_b24, r.origine,
                 _m(r.ttc_b24), _m(r.taxe_b24 or None), r.id_ts,
                 _m(r.base_ht), _m(r.taxe_sejour), _m(r.total),
@@ -352,7 +354,7 @@ def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
             ])
         w.writerow([])
         w.writerow(
-            ["TOTAUX"] + [""] * 7
+            ["TOTAUX"] + [""] * 8
             + [_m(acc["ttc"]), _m(acc["taxe_b"] or None), ""]
             + [_m(acc["ht"]), _m(acc["taxe_s"]), _m(acc["total"]), ""]
         )

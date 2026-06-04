@@ -137,6 +137,7 @@ def beds24_note_value(rec: DeclarationRecord, row: "Any | None" = None) -> str:
     if row is not None:
         lines.append(f"Nuits: {row.nights}")
         lines.append(f"Gîte(s): {row.units}")
+        lines.append(f"Client: {row.client}")
     lines += [
         f"Adultes: {rec.declared_adults} | Enfants: {rec.declared_children}",
         f"ID Beds24: {rec.book_id}",
