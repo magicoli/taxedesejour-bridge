@@ -148,8 +148,18 @@ def _parse_invoice(raw: list[dict]) -> tuple[float, float, list[InvoiceLine]]:
 
 # ── API call ───────────────────────────────────────────────────────────────────
 
+def _month_offset(year: int, month: int, delta: int) -> tuple[int, int]:
+    """Return (year, month) shifted by delta months."""
+    m = month + delta
+    return (year + (m - 1) // 12, (m - 1) % 12 + 1)
+
+
 def _fetch_raw(year: int, month: int) -> list[dict]:
-    first = date(year, month, 1)
+    # Fetch arrivals from 4 months back to end of target month.
+    # Bookings are assigned by check-OUT date, so a 4-month lookback
+    # covers any realistic stay length.
+    y_from, m_from = _month_offset(year, month, -4)
+    first = date(y_from, m_from, 1)
     last  = date(year, month, calendar.monthrange(year, month)[1])
 
     auth: dict = {"apiKey": BEDS24_API_KEY, "propKey": BEDS24_PROP_KEY}
@@ -191,8 +201,10 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def get_bookings(year: int, month: int) -> list[Booking]:
-    """Return ALL bookings whose check-in falls in the given month.
+    """Return ALL bookings whose check-OUT falls in the given month.
 
+    A stay is declared in the month where the prestation ends (checkout date).
+    Fetches from 4 months prior to catch long cross-month stays.
     Includes platform bookings — callers decide what to do with them.
     Blocks (status 4/5) and cancellations (status 3) are excluded.
     """
@@ -245,6 +257,10 @@ def get_bookings(year: int, month: int) -> list[Booking]:
             taxe_in_invoice  = taxe_inv,
             invoice_lines    = inv_lines,
         ))
+
+    # Keep only bookings whose checkout falls in the requested month
+    bookings = [b for b in bookings
+                if b.check_out.year == year and b.check_out.month == month]
 
     return sorted(bookings, key=lambda b: (b.check_in, b.unit))
 

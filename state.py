@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-STATE_FILE = Path(__file__).parent / "declarations.json"
+STATE_FILE = Path(__file__).parent / "data" / "declarations.json"
 
 AMOUNT_CHANGE_THRESHOLD = 0.0  # toute différence, même centimétrique, est signalée
 

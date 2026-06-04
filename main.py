@@ -51,8 +51,6 @@ def parse_args() -> argparse.Namespace:
                    help="Récap seul, sans interaction taxesejour.fr")
     p.add_argument("--no-beds24-note", action="store_true",
                    help="Ne pas écrire dans custom1 Beds24")
-    p.add_argument("--csv", metavar="FILE", default="recap.csv",
-                   help="Fichier CSV de sortie (défaut: recap.csv)")
     return p.parse_args()
 
 
@@ -75,7 +73,7 @@ class Row:
     base_ht: Optional[float]    # None for platforms and n/a
     taxe_sejour: Optional[float]  # base_ht * 5%
     total: Optional[float]      # base_ht * 1.071 (= HT + TVA 2.1% + taxe 5%)
-    statut: str             # "add" / "add ↑" / "ok" / "ok ↑" / "update ↑" / "n/a" / "—"
+    statut: str             # "add" / "add !" / "ok" / "ok !" / "update !" / "n/a" / "—"
     warnings: list[str] = field(default_factory=list)
     book_ids_for_links: list[str] = field(default_factory=list)
 
@@ -132,7 +130,7 @@ def _build_row(
             warnings.append(warn)
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff = g.computed_taxe - g.taxe_in_invoice
-            warn = (f"taxe Beds24 {g.taxe_in_invoice:.2f}€ ≠ théorique "
+            warn = (f"taxe encaissée {g.taxe_in_invoice:.2f}€ ≠ déclarée "
                     f"{g.computed_taxe:.2f}€ (Δ {diff:+.2f}€)")
             for bid in book_ids_list:
                 warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
@@ -147,13 +145,13 @@ def _build_row(
 
     # Status
     has_issues = bool(warnings)
-    suffix = " ↑" if has_issues else ""
+    suffix = " !" if has_issues else ""
     if is_plat:
         statut = "—"
     elif not g.has_amount:
         statut = "n/a"
     elif all_tracked and amount_changes:
-        statut = f"update ↑"
+        statut = f"update !"
     elif all_tracked:
         statut = f"ok{suffix}"
     else:
@@ -197,7 +195,7 @@ def process_month(
 
     if fill:
         for row, g in zip(rows, all_groups):
-            if (row.statut not in ("add", "add ↑") or row.base_ht is None
+            if (row.statut not in ("add", "add !") or row.base_ht is None
                     or not g.has_occupants):
                 continue
             try:
@@ -232,7 +230,7 @@ def process_month(
                         if ok:
                             rec.beds24_noted = True
             except Exception as e:
-                row.statut = "err ↑"
+                row.statut = "err !"
                 row.warnings.append(f"erreur soumission: {e}")
 
         # Save n/a groups to state (0€ stay = not declarable)
@@ -259,14 +257,14 @@ def print_run_warnings(month_label: str, rows: list[Row]) -> None:
         return
     print(f"\n── {month_label}")
     for row in issues:
-        prefix = f"  {row.check_in.strftime('%d/%m')}→{row.check_out.strftime('%d/%m')} [{row.units}]"
+        prefix = f"{row.check_in.strftime('%d/%m/%y')}→{row.check_out.strftime('%d/%m/%y')} [{row.units}]"
         for w in row.warnings:
-            print(f"  ⚠ {prefix}  {w}")
+            print(f"{prefix}  {w}")
 
 
 # ── Recap table ───────────────────────────────────────────────────────────────
 
-_D = "—"
+_D = ""
 
 def _v(x: Optional[float], w: int = 9) -> str:
     return f"{x:>{w}.2f}" if x is not None else f"{_D:>{w}}"
@@ -275,7 +273,14 @@ def _s(x: str, w: int) -> str:
     """Truncate string to width."""
     return x[:w] if len(x) > w else x
 
-def print_recap(rows: list[Row], csv_path: str) -> None:
+def _csv_path(year: int, month: int) -> str:
+    from pathlib import Path
+    Path("data").mkdir(exist_ok=True)
+    return f"data/taxe-de-sejour-{year}-{month:02d}.csv"
+
+
+def print_recap(rows: list[Row], year: int, month: int) -> None:
+    csv_path = _csv_path(year, month)
     rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
 
     # ── Terminal table ────────────────────────────────────────────────────────
@@ -296,20 +301,19 @@ def print_recap(rows: list[Row], csv_path: str) -> None:
         return d.strftime("%d/%m/%y")
 
     HDR = (
-        f"  {'Début':8} {'Fin':8} {'N':>5}  "
-        f"{'Gîte(s)':18} {'A':>2} {'E':>2}  "
+        f"{'Début':8} {'Fin':8} {'N':>5}  "
+        f"{'Gîte(s)':18} {'Ad':>2} {'En':>2}  "
         f"{'ID Beds24':14} {'Origine':12}  "
-        f"{'TTC B24':>9} {'Taxe B24':>9}  "
+        f"{'Brut':>9} {'TS Prov':>9}  "
         f"{'ID TS':10}  "
-        f"{'Base HT':>9} {'Taxe Séj.':>9} {'Total':>9}  "
+        f"{'Base HT':>9} {'TS':>9} {'TTC':>9}  "
         f"Statut"
     )
     W = len(HDR) + 2
-    print(f"\n{'═' * W}")
-    print(f"  RÉCAP")
-    print(f"{'═' * W}\n")
+    # print(f"{'═' * W}\n")
+    print(f"{'─' * (W - 2)}")
     print(HDR)
-    print(f"  {'─' * (W - 2)}")
+    print(f"{'─' * (W - 2)}")
 
     # Accumulators
     acc = dict(ttc=0.0, taxe_b=0.0, ht=0.0, taxe_s=0.0, total=0.0, plat=0.0)
@@ -318,7 +322,7 @@ def print_recap(rows: list[Row], csv_path: str) -> None:
         ids_short = _s(row.ids_b24, 14)
         id_ts_s   = _s(row.id_ts, 10)
         line = (
-            f"  {_date(row.check_in):8} {_date(row.check_out):8} {row.nights:>5}  "
+            f"{_date(row.check_in):8} {_date(row.check_out):8} {row.nights:>5}  "
             f"{row.units:18} {row.adults:>2} {row.children:>2}  "
             f"{ids_short:14} {row.origine:12}  "
             f"{_v(row.ttc_b24):>9} {_v(row.taxe_b24 or None):>9}  "
@@ -341,23 +345,23 @@ def print_recap(rows: list[Row], csv_path: str) -> None:
     # Totals row — prefix chars = 2+8+1+8+1+5+2+18+1+2+1+2+2+14+1+12 = 80
     # then "  " before TTC → 82 total chars before money columns
     PFX = 80
-    print(f"  {'─' * (W - 2)}")
+    print(f"{'─' * (W - 2)}")
     print(
-        f"  {'TOTAUX DIRECTS':{PFX}}"
-        f"  {_v(acc['ttc']):>9} {_v(acc['taxe_b'] or None):>9}  "
+        f"{'TOTAUX':{PFX}}"
+        f"{_v(acc['ttc']):>9} {_v(acc['taxe_b'] or None):>9}  "
         f"{'':10}  "
         f"{_v(acc['ht']):>9} {_v(acc['taxe_s']):>9} {_v(acc['total']):>9}"
     )
-    if acc["plat"]:
-        print(f"  {'PLATEFORMES':{PFX}}  {_v(acc['plat']):>9}")
+    # if acc["plat"]:
+    #     print(f"{'PLATEFORMES':{PFX}}  {_v(acc['plat']):>9}")
 
-    print(f"\n{'═' * W}\n")
+    # print(f"\n{'═' * W}\n")
 
     # ── CSV ───────────────────────────────────────────────────────────────────
     HEADERS = [
         "Début", "Fin", "Nuits", "Gîte(s)", "Adultes", "Enfants",
         "ID Beds24", "Origine",
-        "TTC B24", "Taxe B24",
+        "Brut", "TaxeProv",
         "ID Taxesejour",
         "Base HT", "Taxe Séjour", "Total",
         "Statut",
@@ -389,17 +393,17 @@ def print_recap(rows: list[Row], csv_path: str) -> None:
             ])
         w.writerow([])
         w.writerow(
-            ["TOTAUX DIRECTS"] + [""] * 7
+            ["TOTAUX"] + [""] * 7
             + [_csv_money(acc["ttc"]), _csv_money(acc["taxe_b"] or None), ""]
             + [_csv_money(acc["ht"]), _csv_money(acc["taxe_s"]), _csv_money(acc["total"]), ""]
         )
-        if acc["plat"]:
-            w.writerow(
-                ["PLATEFORMES"] + [""] * 7
-                + [_csv_money(acc["plat"])] + [""] * 6
-            )
+        # if acc["plat"]:
+        #     w.writerow(
+        #         ["PLATEFORMES"] + [""] * 7
+        #         + [_csv_money(acc["plat"])] + [""] * 6
+        #     )
 
-    print(f"  Récap exporté: {csv_path}\n")
+    # print(f"Récap exporté: {csv_path}\n")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -432,19 +436,16 @@ def main() -> None:
 
     label = ", ".join(date(y, m, 1).strftime("%B %Y") for y, m, _ in months)
     mode  = "--fill" if fill else "dry-run"
-    print(f"{'═' * 64}")
-    print(f"  Taxe de séjour — {label}  [{mode}]")
-    print(f"{'═' * 64}")
+    # print(f"{'═' * 64}")
+    # print(f"Taxe de séjour — {label}  [{mode}]")
+    # print(f"{'═' * 64}")
 
-    all_rows: list[Row] = []
     for y, m, pid in months:
         month_rows = process_month(y, m, pid, client, records,
                                    fill=fill, write_beds24_note=write_note)
         month_label = date(y, m, 1).strftime("%B %Y")
         print_run_warnings(month_label, month_rows)
-        all_rows.extend(month_rows)
-
-    print_recap(all_rows, args.csv)
+        print_recap(month_rows, y, m)
 
 
 if __name__ == "__main__":

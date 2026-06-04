@@ -1,4 +1,4 @@
 __pycache__/
 .venv/
-declarations.json
-recap.csv
+data/*.csv
+data/declarations.json
