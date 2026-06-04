@@ -93,7 +93,7 @@ def _build_row(
     """Compute all fields for a booking group."""
     is_plat = any(_is_platform(b.api_source) for b in g.bookings)
     source  = next((_source_label(b.api_source)
-                    for b in g.bookings if _is_platform(b.api_source)), "Direct")
+                    for b in g.bookings if _is_platform(b.api_source)), "")
 
     # IDs
     ids_b24 = ",".join(b.book_id for b in g.bookings)
@@ -115,26 +115,29 @@ def _build_row(
             if rec and rec.amount_changed(b.declared_amount):
                 amount_changes.append((b.book_id, rec.declared_amount_ht, b.declared_amount))
 
-    # Warnings
-    warnings: list[str] = []
+    # action_warnings: require intervention → trigger "!" in status column
+    # info_warnings:   informational (taxe discrepancy) → shown before table, no "!"
+    action_warnings: list[str] = []
+    info_warnings:   list[str] = []
     if not is_plat:
         if g.has_amount and not g.has_occupants:
-            warn = f"occupants manquants — corriger dans Beds24"
+            warn = "occupants manquants — corriger dans Beds24"
             for bid in book_ids_list:
                 warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
-            warnings.append(warn)
+            action_warnings.append(warn)
         for bid, old_ht, new_ht in amount_changes:
             diff = new_ht - old_ht
             warn = (f"montant modifié depuis déclaration: {old_ht:.2f}→{new_ht:.2f}€ HT "
                     f"(Δ {diff:+.2f}€) | {BEDS24_BOOKING_URL.format(book_id=bid)}")
-            warnings.append(warn)
+            action_warnings.append(warn)
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff = g.computed_taxe - g.taxe_in_invoice
             warn = (f"taxe encaissée {g.taxe_in_invoice:.2f}€ ≠ déclarée "
                     f"{g.computed_taxe:.2f}€ (Δ {diff:+.2f}€)")
             for bid in book_ids_list:
                 warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
-            warnings.append(warn)
+            info_warnings.append(warn)
+    warnings = action_warnings + info_warnings
 
     # Declaration amounts (None for platforms and 0€ bookings)
     base_ht = taxe_sej = total = None
@@ -143,9 +146,8 @@ def _build_row(
         taxe_sej = base_ht * TAXE_RATE
         total    = base_ht * (1 + VAT_RATE + TAXE_RATE)
 
-    # Status
-    has_issues = bool(warnings)
-    suffix = " !" if has_issues else ""
+    # "!" only for action-required warnings
+    suffix = " !" if action_warnings else ""
     if is_plat:
         statut = "—"
     elif not g.has_amount:
@@ -279,131 +281,87 @@ def _csv_path(year: int, month: int) -> str:
     return f"data/taxe-de-sejour-{year}-{month:02d}.csv"
 
 
-def print_recap(rows: list[Row], year: int, month: int) -> None:
-    csv_path = _csv_path(year, month)
-    rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
+def _totals(rows: list[Row]) -> dict:
+    acc = dict(ttc=0.0, taxe_b=0.0, ht=0.0, taxe_s=0.0, total=0.0)
+    for r in rows:
+        acc["ttc"]    += r.ttc_b24
+        acc["taxe_b"] += r.taxe_b24
+        if r.base_ht is not None:
+            acc["ht"]    += r.base_ht
+            acc["taxe_s"] += r.taxe_sejour   # type: ignore[operator]
+            acc["total"]  += r.total          # type: ignore[operator]
+    return acc
 
-    # ── Terminal table ────────────────────────────────────────────────────────
-    # Column widths
-    CW = {
-        "date":    8,   # dd/mm/aa
-        "nuits":   5,
-        "units":   18,
-        "pers":    2,   # A and E each
-        "ids_b24": 14,  # truncated if needed
-        "origine": 12,
-        "money":   9,
-        "id_ts":   10,
-        "statut":  9,
-    }
 
-    def _date(d: date) -> str:
-        return d.strftime("%d/%m/%y")
-
+def _render_terminal(rows: list[Row], acc: dict) -> None:
     HDR = (
         f"{'Début':8} {'Fin':8} {'N':>5}  "
         f"{'Gîte(s)':18} {'Ad':>2} {'En':>2}  "
         f"{'ID Beds24':14} {'Origine':12}  "
         f"{'Brut':>9} {'TS Prov':>9}  "
-        f"{'ID TS':10}  "
+        f"{'ID CANBT':10}  "
         f"{'Base HT':>9} {'TS':>9} {'TTC':>9}  "
         f"Statut"
     )
-    W = len(HDR) + 2
-    # print(f"{'═' * W}\n")
-    print(f"{'─' * (W - 2)}")
+    SEP = "─" * len(HDR)
+    print(SEP)
     print(HDR)
-    print(f"{'─' * (W - 2)}")
-
-    # Accumulators
-    acc = dict(ttc=0.0, taxe_b=0.0, ht=0.0, taxe_s=0.0, total=0.0, plat=0.0)
-
-    for row in rows:
-        ids_short = _s(row.ids_b24, 14)
-        id_ts_s   = _s(row.id_ts, 10)
-        line = (
-            f"{_date(row.check_in):8} {_date(row.check_out):8} {row.nights:>5}  "
-            f"{row.units:18} {row.adults:>2} {row.children:>2}  "
-            f"{ids_short:14} {row.origine:12}  "
-            f"{_v(row.ttc_b24):>9} {_v(row.taxe_b24 or None):>9}  "
-            f"{id_ts_s:10}  "
-            f"{_v(row.base_ht):>9} {_v(row.taxe_sejour):>9} {_v(row.total):>9}  "
-            f"{row.statut}"
+    print(SEP)
+    for r in rows:
+        print(
+            f"{r.check_in.strftime('%d/%m/%y'):8} {r.check_out.strftime('%d/%m/%y'):8}"
+            f" {r.nights:>5}  "
+            f"{r.units:18} {r.adults:>2} {r.children:>2}  "
+            f"{_s(r.ids_b24, 14):14} {r.origine:12}  "
+            f"{_v(r.ttc_b24):>9} {_v(r.taxe_b24 or None):>9}  "
+            f"{_s(r.id_ts, 10):10}  "
+            f"{_v(r.base_ht):>9} {_v(r.taxe_sejour):>9} {_v(r.total):>9}  "
+            f"{r.statut}"
         )
-        print(line)
-
-        if row.origine == "Direct":
-            acc["ttc"]  += row.ttc_b24
-            acc["taxe_b"] += row.taxe_b24
-            if row.base_ht is not None:
-                acc["ht"]    += row.base_ht
-                acc["taxe_s"] += row.taxe_sejour  # type: ignore[operator]
-                acc["total"]  += row.total         # type: ignore[operator]
-        else:
-            acc["plat"] += row.ttc_b24
-
-    # Totals row — prefix chars = 2+8+1+8+1+5+2+18+1+2+1+2+2+14+1+12 = 80
-    # then "  " before TTC → 82 total chars before money columns
-    PFX = 80
-    print(f"{'─' * (W - 2)}")
+    # prefix = 8+1+8+1+5+2+18+1+2+1+2+2+14+1+12+2 = 80 chars before money cols
+    print(SEP)
     print(
-        f"{'TOTAUX':{PFX}}"
+        f"{'TOTAUX':80}"
         f"{_v(acc['ttc']):>9} {_v(acc['taxe_b'] or None):>9}  "
         f"{'':10}  "
         f"{_v(acc['ht']):>9} {_v(acc['taxe_s']):>9} {_v(acc['total']):>9}"
     )
-    # if acc["plat"]:
-    #     print(f"{'PLATEFORMES':{PFX}}  {_v(acc['plat']):>9}")
 
-    # print(f"\n{'═' * W}\n")
 
-    # ── CSV ───────────────────────────────────────────────────────────────────
-    HEADERS = [
-        "Début", "Fin", "Nuits", "Gîte(s)", "Adultes", "Enfants",
-        "ID Beds24", "Origine",
-        "Brut", "TaxeProv",
-        "ID Taxesejour",
-        "Base HT", "Taxe Séjour", "Total",
-        "Statut",
-    ]
-
-    def _csv_money(x: Optional[float]) -> str:
+def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
+    def _m(x: Optional[float]) -> str:
         return f"{x:.2f}".replace(".", ",") if x is not None else ""
 
+    HEADERS = [
+        "Début", "Fin", "Nuits", "Gîte(s)", "Adultes", "Enfants",
+        "ID Beds24", "Origine", "Brut", "TaxeProv", "ID Taxesejour",
+        "Base HT", "Taxe Séjour", "Total", "Statut",
+    ]
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(HEADERS)
-        for row in rows:
+        for r in rows:
             w.writerow([
-                row.check_in.strftime("%d/%m/%Y"),
-                row.check_out.strftime("%d/%m/%Y"),
-                row.nights,
-                row.units,
-                row.adults,
-                row.children,
-                row.ids_b24,
-                row.origine,
-                _csv_money(row.ttc_b24),
-                _csv_money(row.taxe_b24 or None),
-                row.id_ts,
-                _csv_money(row.base_ht),
-                _csv_money(row.taxe_sejour),
-                _csv_money(row.total),
-                row.statut,
+                r.check_in.strftime("%d/%m/%Y"), r.check_out.strftime("%d/%m/%Y"),
+                r.nights, r.units, r.adults, r.children,
+                r.ids_b24, r.origine,
+                _m(r.ttc_b24), _m(r.taxe_b24 or None), r.id_ts,
+                _m(r.base_ht), _m(r.taxe_sejour), _m(r.total),
+                r.statut,
             ])
         w.writerow([])
         w.writerow(
             ["TOTAUX"] + [""] * 7
-            + [_csv_money(acc["ttc"]), _csv_money(acc["taxe_b"] or None), ""]
-            + [_csv_money(acc["ht"]), _csv_money(acc["taxe_s"]), _csv_money(acc["total"]), ""]
+            + [_m(acc["ttc"]), _m(acc["taxe_b"] or None), ""]
+            + [_m(acc["ht"]), _m(acc["taxe_s"]), _m(acc["total"]), ""]
         )
-        # if acc["plat"]:
-        #     w.writerow(
-        #         ["PLATEFORMES"] + [""] * 7
-        #         + [_csv_money(acc["plat"])] + [""] * 6
-        #     )
 
-    # print(f"Récap exporté: {csv_path}\n")
+
+def print_recap(rows: list[Row], year: int, month: int) -> None:
+    rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
+    acc  = _totals(rows)
+    _render_terminal(rows, acc)
+    _write_csv(rows, acc, _csv_path(year, month))
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
