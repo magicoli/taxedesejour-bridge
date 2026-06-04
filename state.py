@@ -121,11 +121,18 @@ def get(records: dict[str, DeclarationRecord], book_id: str) -> Optional[Declara
 
 
 def beds24_note_value(rec: DeclarationRecord) -> str:
-    """Compact string to store in Beds24 custom1 field."""
-    s = (f"CANBT:{rec.declared_at[:10]}"
-         f"|{rec.declared_amount_ht:.2f}€HT"
-         f"|{rec.declared_adults}A/{rec.declared_children}E"
-         f"|{rec.status}")
+    """Human-readable string stored in Beds24 custom1 field.
+
+    Format: same column layout as the final recap table line.
+    """
+    from config import TAXE_RATE, VAT_RATE
+    taxe  = rec.declared_amount_ht * TAXE_RATE
+    total = rec.declared_amount_ht * (1 + VAT_RATE + TAXE_RATE)
+    s = (f"Déclaré {rec.declared_at[:10]} | "
+         f"{rec.declared_adults}A {rec.declared_children}E | "
+         f"HT {rec.declared_amount_ht:.2f}€ | "
+         f"taxe {taxe:.2f}€ | "
+         f"total {total:.2f}€")
     if rec.ts_stay_id:
-        s += f"|ts#{rec.ts_stay_id}"
+        s += f" | ts#{rec.ts_stay_id}"
     return s
