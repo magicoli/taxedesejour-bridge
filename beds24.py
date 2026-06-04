@@ -317,6 +317,26 @@ class BookingGroup:
         return sorted(set(b.platform_name for b in self.bookings))
 
 
+def set_booking_custom1(book_id: str, value: str) -> bool:
+    """Write a short string to the booking's custom1 field in Beds24.
+
+    Used to record the CANBT declaration info for human reference.
+    Returns True on success.
+    """
+    payload = {
+        "authentication": {"apiKey": BEDS24_API_KEY, "propKey": BEDS24_PROP_KEY},
+        "bookId": book_id,
+        "custom1": value,
+    }
+    try:
+        resp = requests.post(BEDS24_API_URL + "setBooking", json=payload, timeout=15)
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("success") == "booking modified"
+    except Exception:
+        return False
+
+
 def group_by_dates(bookings: list[Booking]) -> list[BookingGroup]:
     """Group bookings with the same (check_in, check_out) into one declaration group."""
     from collections import defaultdict
