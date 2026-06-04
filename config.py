@@ -53,8 +53,36 @@ BEDS24_ROOMS: dict[int, str] = {
 
 # VAT rate in Guadeloupe (2.1%) — amounts in Beds24 are TTC
 VAT_RATE = 0.021
-# Taxe de séjour rate (5% of HT)
+# Taxe de séjour rate (5% of HT, adults only)
 TAXE_RATE = 0.05
+
+
+# ── Tax formula (single source of truth) ──────────────────────────────────────
+# total_ttc = ht * (1 + VAT_RATE + TAXE_RATE * adults/guests)
+# Only adults are subject to the taxe de séjour; children are exempt.
+
+def ts_ratio(adults: int, children: int) -> float:
+    """Fraction of guests subject to the taxe de séjour (adults / total)."""
+    guests = adults + children
+    return adults / guests if guests > 0 else 0.0
+
+
+def ht_from_total(total_ttc: float, adults: int, children: int) -> float:
+    """Recover base HT from the total actually received.
+
+    Inverts: total_ttc = ht * (1 + VAT_RATE + TAXE_RATE * adults/guests)
+    """
+    return total_ttc / (1 + VAT_RATE + TAXE_RATE * ts_ratio(adults, children))
+
+
+def taxe_sejour(ht: float, adults: int, children: int) -> float:
+    """Taxe de séjour due: ht * (adults/guests) * TAXE_RATE."""
+    return ht * ts_ratio(adults, children) * TAXE_RATE
+
+
+def total_ttc(ht: float, adults: int, children: int) -> float:
+    """Total = HT + TVA + taxe de séjour."""
+    return ht * (1 + VAT_RATE) + taxe_sejour(ht, adults, children)
 
 # apiSource codes for platforms that collect taxe de séjour on our behalf.
 # These still appear in the full recap but are NOT to be declared by us.

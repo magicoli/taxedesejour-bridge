@@ -20,7 +20,7 @@ from typing import Optional
 
 import state as st
 from beds24 import Booking, BookingGroup, get_bookings, group_by_dates, set_booking_custom1
-from config import BEDS24_BOOKING_URL, TAXE_RATE, VAT_RATE
+from config import BEDS24_BOOKING_URL
 from taxesejour import TaxeSejourClient
 
 # ── Platform normalisation ────────────────────────────────────────────────────
@@ -139,12 +139,13 @@ def _build_row(
             info_warnings.append(warn)
     warnings = action_warnings + info_warnings
 
-    # Declaration amounts (None for platforms and 0€ bookings)
+    # Declaration amounts (None for platforms and 0€ bookings).
+    # total == g.total_received by construction (ht*(1+VAT) + ts == reçu).
     base_ht = taxe_sej = total = None
     if not is_plat and g.has_amount:
         base_ht  = g.declared_amount
-        taxe_sej = base_ht * TAXE_RATE
-        total    = base_ht * (1 + VAT_RATE + TAXE_RATE)
+        taxe_sej = g.computed_taxe
+        total    = g.total_received
 
     # "!" only for action-required warnings
     suffix = " !" if action_warnings else ""
@@ -168,8 +169,8 @@ def _build_row(
         children           = g.children,
         ids_b24            = ids_b24,
         origine            = source,
-        ttc_b24            = g.acc_amount_ttc,
-        taxe_b24           = g.taxe_in_invoice,
+        ttc_b24            = g.total_received,      # Brut = total reçu du client
+        taxe_b24           = g.taxe_in_invoice,     # dont TS provisoire encaissée
         id_ts              = id_ts,
         base_ht            = base_ht,
         taxe_sejour        = taxe_sej,

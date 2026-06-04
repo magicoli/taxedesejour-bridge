@@ -19,8 +19,8 @@ from config import (
     BEDS24_ROOMS,
     ICAL_SOURCE,
     PLATFORM_SOURCES,
-    TAXE_RATE,
-    VAT_RATE,
+    ht_from_total,
+    taxe_sejour,
 )
 
 def _get_fallback_auth() -> dict | None:
@@ -52,6 +52,8 @@ class Booking:
     children: int
     api_source: str
     guest: str
+    guest_email: str        # for client matching when no group/masterId
+    master_id: str          # Beds24 group booking linkage ("" if standalone)
     # Financial fields (computed from invoice or price_field)
     price_field: float      # raw 'price' from Beds24
     acc_amount_ttc: float   # accommodation TTC (from invoice or price_field)
@@ -77,24 +79,24 @@ class Booking:
         return "Direct"
 
     @property
-    def acc_amount_ht(self) -> float:
-        """Accommodation price HT (excl. VAT 2.1%)."""
-        return self.acc_amount_ttc / (1 + VAT_RATE)
+    def total_received(self) -> float:
+        """Total actually received from the client (accommodation TTC + invoiced taxe)."""
+        return self.acc_amount_ttc + self.taxe_in_invoice
 
     @property
     def declared_amount(self) -> float:
-        """Amount to declare on taxesejour.fr: accommodation HT.
+        """Base HT, back-calculated from the total actually received.
 
-        The platform computes: declared * 5% = taxe de séjour.
-        We simply convert TTC → HT (÷ 1.021). When taxe was already invoiced
-        separately (taxe_in_invoice > 0), acc_amount_ttc already excludes it.
+        ht = total_received / (1 + VAT_RATE + TAXE_RATE * adults/guests)
+        so that ht*(1+VAT) + taxe == total_received by construction,
+        whatever taxe was (or wasn't) provisionally charged.
         """
-        return self.acc_amount_ttc / (1 + VAT_RATE)
+        return ht_from_total(self.total_received, self.adults, self.children)
 
     @property
     def computed_taxe(self) -> float:
-        """Taxe de séjour at 5% on declared_amount."""
-        return self.declared_amount * TAXE_RATE
+        """Taxe de séjour due: ht * (adults/guests) * TAXE_RATE."""
+        return taxe_sejour(self.declared_amount, self.adults, self.children)
 
     @property
     def has_amount(self) -> bool:
@@ -252,6 +254,8 @@ def get_bookings(year: int, month: int) -> list[Booking]:
             children         = int(row.get("numChild") or 0),
             api_source       = str(row.get("apiSource") or "0"),
             guest            = guest,
+            guest_email      = str(row.get("guestEmail") or "").strip(),
+            master_id        = str(row.get("masterId") or "").strip(),
             price_field      = price_field,
             acc_amount_ttc   = acc_ttc,
             taxe_in_invoice  = taxe_inv,
@@ -295,6 +299,10 @@ class BookingGroup:
     @property
     def acc_amount_ttc(self) -> float:
         return sum(b.acc_amount_ttc for b in self.bookings)
+
+    @property
+    def total_received(self) -> float:
+        return sum(b.total_received for b in self.bookings)
 
     @property
     def taxe_in_invoice(self) -> float:
@@ -353,13 +361,61 @@ def set_booking_custom1(book_id: str, value: str) -> bool:
         return False
 
 
-def group_by_dates(bookings: list[Booking]) -> list[BookingGroup]:
-    """Group bookings with the same (check_in, check_out) into one declaration group."""
+def _same_client(a: Booking, b: Booking) -> bool:
+    """Two bookings belong to the same client → one declaration.
+
+    1. Same Beds24 group (master booking linkage)
+    2. Same email
+    3. No email on either side AND same guest name
+    """
+    if (a.master_id or a.book_id) == (b.master_id or b.book_id):
+        return True
+    ea, eb = a.guest_email.lower(), b.guest_email.lower()
+    if ea and eb:
+        return ea == eb
+    if not ea and not eb:
+        na, nb = a.guest.strip().lower(), b.guest.strip().lower()
+        return bool(na) and na == nb
+    return False
+
+
+def _cluster_by_client(bucket: list[Booking]) -> list[list[Booking]]:
+    """Union-find clustering of same-date bookings by client identity."""
+    n = len(bucket)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _same_client(bucket[i], bucket[j]):
+                parent[find(i)] = find(j)
+
     from collections import defaultdict
-    groups: dict[tuple, list[Booking]] = defaultdict(list)
+    comps: dict[int, list[Booking]] = defaultdict(list)
+    for i, bk in enumerate(bucket):
+        comps[find(i)].append(bk)
+    return list(comps.values())
+
+
+def group_by_dates(bookings: list[Booking]) -> list[BookingGroup]:
+    """Group bookings sharing exact dates AND the same client into one declaration.
+
+    Bookings at the same dates for different clients stay separate.
+    Overlapping-but-different dates are NOT merged (declaration limitation).
+    """
+    from collections import defaultdict
+    by_dates: dict[tuple, list[Booking]] = defaultdict(list)
     for b in bookings:
-        groups[(b.check_in, b.check_out)].append(b)
-    return [
-        BookingGroup(check_in=k[0], check_out=k[1], bookings=v)
-        for k, v in sorted(groups.items())
-    ]
+        by_dates[(b.check_in, b.check_out)].append(b)
+
+    groups: list[BookingGroup] = []
+    for (ci, co), bucket in by_dates.items():
+        for cluster in _cluster_by_client(bucket):
+            groups.append(BookingGroup(check_in=ci, check_out=co, bookings=cluster))
+
+    return sorted(groups, key=lambda g: (g.check_in, g.check_out))
