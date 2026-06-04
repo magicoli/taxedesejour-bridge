@@ -184,48 +184,57 @@ class TaxeSejourClient:
 
         return result
 
-    def get_pending_months(self, year: int) -> list[tuple[int, int]]:
-        """Return (year, month) tuples for months with status 'À déclarer'.
+    def get_pending_months(self, year: int) -> list[tuple[int, int, str]]:
+        """Return (year, month, period_id) tuples for months with status 'À déclarer'.
 
         Skips 'Déclaré' (already closed) and 'En anticipation' (future).
         """
         periods = self._find_periods(year)
         pending = []
-        for months in periods.values():
+        for pid, months in periods.items():
             for month_str, status in sorted(months.items()):
                 if "déclarer" in status.lower():
                     y, m, _ = month_str.split("-")
-                    pending.append((int(y), int(m)))
+                    pending.append((int(y), int(m), pid))
         return sorted(pending)
+
+    def get_stay_ids(self, year: int, month: int, period_id: str) -> set[str]:
+        """Return the set of stay IDs already declared for the given month."""
+        month_str = f"{year}-{month:02d}-01"
+        path = (f"/v2/host/declarations/index/{TS_HOST_ID}/{TS_LODGING_ID}"
+                f"/{year}/{period_id}/{month_str}")
+        html = self._get_frame(path, "right-turbo-pane")
+        return set(re.findall(
+            rf'/v2/host/declarations/index/{TS_HOST_ID}/{TS_LODGING_ID}'
+            rf'/{year}/{period_id}/{month_str}/stay/(\d+)',
+            html,
+        ))
 
     # ── Writing ────────────────────────────────────────────────────────────────
 
     def add_stay(
         self,
         month: date,
+        period_id: str,
         check_in: date,
         check_out: date,
         adults: int,
         children: int,
         amount: float,
-        dry_run: bool = False,
-    ) -> bool:
+    ) -> str:
         """Submit a new stay declaration (3-step form).
 
-        Returns True on success.
-        dry_run=True prints what would be submitted without making the request.
+        Returns the taxesejour.fr stay ID assigned to the new declaration,
+        or "" if it could not be captured (submission still happened).
+        Raises on HTTP or validation error.
         """
         month_str = f"{month.year}-{month.month:02d}-01"
         base = f"/v2/host/stay/new/{TS_REGISTRE_ID}"
 
-        if dry_run:
-            print(
-                f"  [dry-run] Would submit: {check_in} → {check_out}, "
-                f"{adults}A/{children}C, {amount:.2f}€"
-            )
-            return True
-
         self._ensure_logged_in()
+
+        # Snapshot stay IDs before submission so we can diff after
+        ids_before = self.get_stay_ids(month.year, month.month, period_id)
 
         # ── Step 1: dates ──────────────────────────────────────────────────────
         r1 = self._session.get(f"{TS_URL}{base}?month={month_str}")
@@ -283,8 +292,11 @@ class TaxeSejourClient:
         )
         r4.raise_for_status()
 
-        # Success = redirect or 200 with no error message
+        # Success check
         if "erreur" in r4.text.lower() or "error" in r4.text.lower():
             raise RuntimeError(f"Server returned an error on step 3: {r4.text[:300]}")
 
-        return True
+        # Capture the new stay ID by diffing before/after
+        ids_after = self.get_stay_ids(month.year, month.month, period_id)
+        new_ids = ids_after - ids_before
+        return next(iter(new_ids), "")

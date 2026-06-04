@@ -133,6 +133,7 @@ class MonthResult:
 def process_month(
     year: int,
     month: int,
+    period_id: str,
     client: TaxeSejourClient,
     records: dict[str, st.DeclarationRecord],
     fill: bool,
@@ -149,27 +150,28 @@ def process_month(
                 continue  # skip non-declarable and already-declared
             g = s.group
             try:
-                client.add_stay(
+                ts_stay_id = client.add_stay(
                     month     = date(year, month, 1),
+                    period_id = period_id,
                     check_in  = g.check_in,
                     check_out = g.check_out,
                     adults    = g.adults,
                     children  = g.children,
                     amount    = g.declared_amount,
-                    dry_run   = False,
                 )
                 s.submitted_now = True
-                # Save to local state
+                # Save to local state (one record per Beds24 booking in the group)
                 for b in g.bookings:
                     st.mark_declared(
                         records,
-                        book_id   = b.book_id,
-                        unit      = b.unit,
-                        check_in  = b.check_in.isoformat(),
-                        check_out = b.check_out.isoformat(),
-                        amount_ht = b.declared_amount,
-                        adults    = b.adults,
-                        children  = b.children,
+                        book_id    = b.book_id,
+                        unit       = b.unit,
+                        check_in   = b.check_in.isoformat(),
+                        check_out  = b.check_out.isoformat(),
+                        amount_ht  = b.declared_amount,
+                        adults     = b.adults,
+                        children   = b.children,
+                        ts_stay_id = ts_stay_id,
                     )
                     if write_beds24_note:
                         rec = records[b.book_id]
@@ -375,10 +377,17 @@ def main() -> None:
     if args.month:
         try:
             year, month = map(int, args.month.split("-"))
-            months = [(year, month)]
         except ValueError:
             print(f"Format invalide: '{args.month}', attendu YYYY-MM")
             sys.exit(1)
+        # Look up period_id for this specific month
+        all_pending = client.get_pending_months(year)
+        match = next(((y, m, pid) for y, m, pid in all_pending if y == year and m == month), None)
+        if match:
+            months = [match]
+        else:
+            # Month not in pending list — allow anyway with empty period_id
+            months = [(year, month, "")]
     else:
         year = date.today().year
         months = client.get_pending_months(year)
@@ -386,15 +395,15 @@ def main() -> None:
             print("Aucun mois «À déclarer» trouvé sur taxesejour.fr.")
             return
 
-    label = ", ".join(date(y, m, 1).strftime("%B %Y") for y, m in months)
+    label = ", ".join(date(y, m, 1).strftime("%B %Y") for y, m, _ in months)
     mode  = "--fill" if fill else "dry-run"
     print(f"{'═' * 64}")
     print(f"  Taxe de séjour — {label}  [{mode}]")
     print(f"{'═' * 64}")
 
     results: list[MonthResult] = []
-    for y, m in months:
-        r = process_month(y, m, client, records, fill=fill, write_beds24_note=write_note)
+    for y, m, pid in months:
+        r = process_month(y, m, pid, client, records, fill=fill, write_beds24_note=write_note)
         results.append(r)
         print_month_status(r, dry_run=not fill)
 

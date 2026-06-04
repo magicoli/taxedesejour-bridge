@@ -15,7 +15,7 @@ from typing import Optional
 
 STATE_FILE = Path(__file__).parent / "declarations.json"
 
-AMOUNT_CHANGE_THRESHOLD = 1.0  # € — ignore sub-euro floating-point noise
+AMOUNT_CHANGE_THRESHOLD = 0.0  # toute différence, même centimétrique, est signalée
 
 
 @dataclass
@@ -29,7 +29,8 @@ class DeclarationRecord:
     declared_adults: int
     declared_children: int
     status: str             # "declared" | "gift" | "blocked"
-    beds24_noted: bool = False  # custom1 written to Beds24
+    beds24_noted: bool = False      # custom1 written to Beds24
+    ts_stay_id: str = ""            # ID attribué par taxesejour.fr (ex. "14965011")
 
     def amount_changed(self, current_ht: float) -> bool:
         if self.status != "declared":
@@ -66,20 +67,21 @@ def mark_declared(
     amount_ht: float,
     adults: int,
     children: int,
+    ts_stay_id: str = "",
 ) -> DeclarationRecord:
+    existing = records.get(book_id)
     rec = DeclarationRecord(
-        book_id          = book_id,
-        unit             = unit,
-        check_in         = check_in,
-        check_out        = check_out,
-        declared_at      = datetime.now().isoformat(timespec="seconds"),
-        declared_amount_ht = amount_ht,
-        declared_adults  = adults,
-        declared_children= children,
-        status           = "declared",
-        beds24_noted     = records.get(book_id, DeclarationRecord(
-            book_id, unit, check_in, check_out, "", 0, 0, 0, ""
-        )).beds24_noted,
+        book_id           = book_id,
+        unit              = unit,
+        check_in          = check_in,
+        check_out         = check_out,
+        declared_at       = datetime.now().isoformat(timespec="seconds"),
+        declared_amount_ht= amount_ht,
+        declared_adults   = adults,
+        declared_children = children,
+        status            = "declared",
+        beds24_noted      = existing.beds24_noted if existing else False,
+        ts_stay_id        = ts_stay_id or (existing.ts_stay_id if existing else ""),
     )
     records[book_id] = rec
     return rec
@@ -120,9 +122,10 @@ def get(records: dict[str, DeclarationRecord], book_id: str) -> Optional[Declara
 
 def beds24_note_value(rec: DeclarationRecord) -> str:
     """Compact string to store in Beds24 custom1 field."""
-    return (
-        f"CANBT:{rec.declared_at[:10]}"
-        f"|{rec.declared_amount_ht:.2f}€HT"
-        f"|{rec.declared_adults}A/{rec.declared_children}E"
-        f"|{rec.status}"
-    )
+    s = (f"CANBT:{rec.declared_at[:10]}"
+         f"|{rec.declared_amount_ht:.2f}€HT"
+         f"|{rec.declared_adults}A/{rec.declared_children}E"
+         f"|{rec.status}")
+    if rec.ts_stay_id:
+        s += f"|ts#{rec.ts_stay_id}"
+    return s
