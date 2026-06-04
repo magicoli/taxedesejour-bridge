@@ -120,19 +120,37 @@ def get(records: dict[str, DeclarationRecord], book_id: str) -> Optional[Declara
     return records.get(book_id)
 
 
-def beds24_note_value(rec: DeclarationRecord) -> str:
-    """Human-readable string stored in Beds24 custom1 field.
+def beds24_note_value(rec: DeclarationRecord, row: "Any | None" = None) -> str:
+    """Labeled field list stored in Beds24 custom1 field.
 
-    Format: same column layout as the final recap table line.
+    Same 15 columns as the recap table, same order, vertical format.
+    `row` is the Row dataclass from main.py (passed to avoid circular import).
     """
     from config import TAXE_RATE, VAT_RATE
     taxe  = rec.declared_amount_ht * TAXE_RATE
     total = rec.declared_amount_ht * (1 + VAT_RATE + TAXE_RATE)
-    s = (f"Déclaré {rec.declared_at[:10]} | "
-         f"{rec.declared_adults}A {rec.declared_children}E | "
-         f"HT {rec.declared_amount_ht:.2f}€ | "
-         f"taxe {taxe:.2f}€ | "
-         f"total {total:.2f}€")
+
+    lines = [
+        f"Début: {rec.check_in}",
+        f"Fin: {rec.check_out}",
+    ]
+    if row is not None:
+        lines.append(f"Nuits: {row.nights}")
+        lines.append(f"Gîte(s): {row.units}")
+    lines += [
+        f"Adultes: {rec.declared_adults} | Enfants: {rec.declared_children}",
+        f"ID Beds24: {rec.book_id}",
+    ]
+    if row is not None:
+        lines.append(f"Origine: {row.origine}")
+        lines.append(f"TTC B24: {row.ttc_b24:.2f}€"
+                     + (f" | Taxe B24: {row.taxe_b24:.2f}€" if row.taxe_b24 else ""))
     if rec.ts_stay_id:
-        s += f" | ts#{rec.ts_stay_id}"
-    return s
+        lines.append(f"ID Taxesejour: {rec.ts_stay_id}")
+    lines += [
+        f"Base HT: {rec.declared_amount_ht:.2f}€",
+        f"Taxe séjour: {taxe:.2f}€",
+        f"Total: {total:.2f}€",
+        f"Statut: déclaré le {rec.declared_at[:10]}",
+    ]
+    return " | ".join(lines)

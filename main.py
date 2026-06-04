@@ -6,6 +6,7 @@ Usage:
   ./run.sh --month 2026-04        # mois spécifique, dry-run
   ./run.sh --fill                 # soumettre les séjours manquants
   ./run.sh --recap-only           # récap seul, sans interaction taxesejour.fr
+  ./run.sh --csv recap.csv        # fichier CSV (défaut: recap.csv)
 """
 
 from __future__ import annotations
@@ -15,20 +16,19 @@ import csv
 import sys
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
+from typing import Optional
 
 import state as st
 from beds24 import Booking, BookingGroup, get_bookings, group_by_dates, set_booking_custom1
 from config import BEDS24_BOOKING_URL, TAXE_RATE, VAT_RATE
 from taxesejour import TaxeSejourClient
 
-# ── Platform name normalisation ───────────────────────────────────────────────
-# Any source not listed here is "Direct" — we don't expose iCal vs API
+# ── Platform normalisation ────────────────────────────────────────────────────
 _PLATFORM_DISPLAY: dict[str, str] = {
     "19": "Booking.com",
     "29": "Airbnb",
     "46": "Airbnb",
-    # Expedia: add code here when known
+    # Add Expedia code when known
 }
 
 def _source_label(api_source: str) -> str:
@@ -56,132 +56,128 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# ── Recap row ─────────────────────────────────────────────────────────────────
+# ── Canonical row structure ───────────────────────────────────────────────────
+# 15 columns, same order in terminal table, CSV, and Beds24 note.
 
 @dataclass
-class RecapRow:
+class Row:
     check_in: date
     check_out: date
     nights: int
     units: str              # "Moon+Sun"
-    source: str             # "Direct" / "Airbnb" / "Booking.com"
     adults: int
     children: int
-    beds24_ttc: float
-    beds24_taxe: float      # taxe already invoiced in Beds24
-    ht_decl: float | None   # None → platform or n/a
-    taxe_5pct: float | None
-    ttc_recalc: float | None  # ht_decl * 1.071
-    status: str             # "add" / "add ↑" / "ok" / "ok ↑" / "update ↑" / "n/a" / "—"
-    book_ids: list[str] = field(default_factory=list)
-
-
-# ── GroupStatus ───────────────────────────────────────────────────────────────
-
-@dataclass
-class GroupStatus:
-    group: BookingGroup
-    source: str             # "Direct" / platform name
-    is_platform: bool
-    declared: bool
-    submitted_now: bool = False
-    amount_changes: list[tuple[str, float, float]] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)  # inline warning lines
-    submit_error: str = ""
+    ids_b24: str            # "81349082" or "81349082,71612097"
+    origine: str            # "Direct" / "Airbnb" / "Booking.com"
+    ttc_b24: float          # accommodation TTC from Beds24 invoice/price field
+    taxe_b24: float         # taxe already invoiced in Beds24 (0 if none)
+    id_ts: str              # taxesejour.fr stay id(s) from local state
+    base_ht: Optional[float]    # None for platforms and n/a
+    taxe_sejour: Optional[float]  # base_ht * 5%
+    total: Optional[float]      # base_ht * 1.071 (= HT + TVA 2.1% + taxe 5%)
+    statut: str             # "add" / "add ↑" / "ok" / "ok ↑" / "update ↑" / "n/a" / "—"
+    warnings: list[str] = field(default_factory=list)
+    book_ids_for_links: list[str] = field(default_factory=list)
 
     @property
-    def has_issues(self) -> bool:
-        return bool(self.warnings) or bool(self.submit_error)
-
-    def status_str(self) -> str:
-        suffix = " ↑" if self.has_issues else ""
-        g = self.group
-        if self.is_platform:
-            return "—"
-        if not g.has_amount:
-            return "n/a"
-        if not g.has_occupants:
-            return f"add{suffix}"   # can't submit yet but still "to do"
-        if self.submit_error:
-            return f"err ↑"
-        if self.submitted_now:
-            return f"add{suffix}"
-        if self.declared and self.amount_changes:
-            return f"update ↑"
-        if self.declared:
-            return "ok"
-        return f"add{suffix}"
-
-    def to_recap_row(self) -> RecapRow:
-        g = self.group
-        ht = g.declared_amount if (not self.is_platform and g.has_amount) else None
-        return RecapRow(
-            check_in    = g.check_in,
-            check_out   = g.check_out,
-            nights      = g.nights,
-            units       = "+".join(g.units),
-            source      = self.source,
-            adults      = g.adults,
-            children    = g.children,
-            beds24_ttc  = g.acc_amount_ttc,
-            beds24_taxe = g.taxe_in_invoice,
-            ht_decl     = ht,
-            taxe_5pct   = (ht * TAXE_RATE) if ht is not None else None,
-            ttc_recalc  = (ht * (1 + VAT_RATE + TAXE_RATE)) if ht is not None else None,
-            status      = self.status_str(),
-            book_ids    = [b.book_id for b in g.bookings],
-        )
+    def delta(self) -> Optional[float]:
+        """Total recalculé - (TTC B24 + Taxe B24). Positive = taxe sous-collectée."""
+        if self.total is None:
+            return None
+        return self.total - (self.ttc_b24 + self.taxe_b24)
 
 
-# ── Evaluate groups ───────────────────────────────────────────────────────────
+# ── GroupStatus → Row ─────────────────────────────────────────────────────────
 
-def _evaluate(g: BookingGroup, records: dict[str, st.DeclarationRecord]) -> GroupStatus:
-    # Determine source from majority of bookings (or any platform wins)
-    sources = [_source_label(b.api_source) for b in g.bookings]
+def _build_row(
+    g: BookingGroup, records: dict[str, st.DeclarationRecord]
+) -> Row:
+    """Compute all fields for a booking group."""
     is_plat = any(_is_platform(b.api_source) for b in g.bookings)
-    source  = next((s for s in sources if s != "Direct"), "Direct")
+    source  = next((_source_label(b.api_source)
+                    for b in g.bookings if _is_platform(b.api_source)), "Direct")
 
+    # IDs
+    ids_b24 = ",".join(b.book_id for b in g.bookings)
+    book_ids_list = [b.book_id for b in g.bookings]
+
+    # Local state: declared? amount changed? ts IDs?
     all_tracked = all(st.is_tracked(records, b.book_id) for b in g.bookings)
-    changes = []
+    ts_ids = sorted(set(
+        r.ts_stay_id for b in g.bookings
+        if (r := st.get(records, b.book_id)) and r.ts_stay_id
+    ))
+    id_ts = ",".join(ts_ids) if ts_ids else ""
+
+    # Amount changes
+    amount_changes: list[tuple[str, float, float]] = []
     if all_tracked:
         for b in g.bookings:
             rec = st.get(records, b.book_id)
             if rec and rec.amount_changed(b.declared_amount):
-                changes.append((b.book_id, rec.declared_amount_ht, b.declared_amount))
+                amount_changes.append((b.book_id, rec.declared_amount_ht, b.declared_amount))
 
-    warnings = []
+    # Warnings
+    warnings: list[str] = []
     if not is_plat:
         if g.has_amount and not g.has_occupants:
-            warnings.append("occupants non renseignés dans Beds24")
-        for bid, old_ht, new_ht in changes:
-            warnings.append(
-                f"montant modifié: déclaré {old_ht:.2f}€ HT → actuel {new_ht:.2f}€ HT "
-                f"(Δ {new_ht-old_ht:+.2f}€)"
-            )
+            warn = f"occupants manquants — corriger dans Beds24"
+            for bid in book_ids_list:
+                warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
+            warnings.append(warn)
+        for bid, old_ht, new_ht in amount_changes:
+            diff = new_ht - old_ht
+            warn = (f"montant modifié depuis déclaration: {old_ht:.2f}→{new_ht:.2f}€ HT "
+                    f"(Δ {diff:+.2f}€) | {BEDS24_BOOKING_URL.format(book_id=bid)}")
+            warnings.append(warn)
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff = g.computed_taxe - g.taxe_in_invoice
-            warnings.append(
-                f"taxe facturée Beds24 {g.taxe_in_invoice:.2f}€ ≠ théorique "
-                f"{g.computed_taxe:.2f}€ (Δ {diff:+.2f}€)"
-            )
+            warn = (f"taxe Beds24 {g.taxe_in_invoice:.2f}€ ≠ théorique "
+                    f"{g.computed_taxe:.2f}€ (Δ {diff:+.2f}€)")
+            for bid in book_ids_list:
+                warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
+            warnings.append(warn)
 
-    return GroupStatus(
-        group          = g,
-        source         = source,
-        is_platform    = is_plat,
-        declared       = all_tracked,
-        amount_changes = changes,
-        warnings       = warnings,
+    # Declaration amounts (None for platforms and 0€ bookings)
+    base_ht = taxe_sej = total = None
+    if not is_plat and g.has_amount:
+        base_ht  = g.declared_amount
+        taxe_sej = base_ht * TAXE_RATE
+        total    = base_ht * (1 + VAT_RATE + TAXE_RATE)
+
+    # Status
+    has_issues = bool(warnings)
+    suffix = " ↑" if has_issues else ""
+    if is_plat:
+        statut = "—"
+    elif not g.has_amount:
+        statut = "n/a"
+    elif all_tracked and amount_changes:
+        statut = f"update ↑"
+    elif all_tracked:
+        statut = f"ok{suffix}"
+    else:
+        statut = f"add{suffix}"
+
+    return Row(
+        check_in           = g.check_in,
+        check_out          = g.check_out,
+        nights             = g.nights,
+        units              = "+".join(g.units),
+        adults             = g.adults,
+        children           = g.children,
+        ids_b24            = ids_b24,
+        origine            = source,
+        ttc_b24            = g.acc_amount_ttc,
+        taxe_b24           = g.taxe_in_invoice,
+        id_ts              = id_ts,
+        base_ht            = base_ht,
+        taxe_sejour        = taxe_sej,
+        total              = total,
+        statut             = statut,
+        warnings           = warnings,
+        book_ids_for_links = book_ids_list,
     )
-
-
-# ── MonthResult ───────────────────────────────────────────────────────────────
-
-@dataclass
-class MonthResult:
-    year: int
-    month: int
-    statuses: list[GroupStatus]
 
 
 # ── Per-month processing ──────────────────────────────────────────────────────
@@ -194,15 +190,15 @@ def process_month(
     records: dict[str, st.DeclarationRecord],
     fill: bool,
     write_beds24_note: bool,
-) -> tuple[MonthResult, list[Booking]]:
+) -> list[Row]:
     all_bookings = get_bookings(year, month)
     all_groups   = group_by_dates(all_bookings)
-    statuses     = [_evaluate(g, records) for g in all_groups]
+    rows         = [_build_row(g, records) for g in all_groups]
 
     if fill:
-        for s in statuses:
-            g = s.group
-            if s.is_platform or not g.has_amount or not g.has_occupants or s.declared:
+        for row, g in zip(rows, all_groups):
+            if (row.statut not in ("add", "add ↑") or row.base_ht is None
+                    or not g.has_occupants):
                 continue
             try:
                 ts_id = client.add_stay(
@@ -214,7 +210,10 @@ def process_month(
                     children  = g.children,
                     amount    = g.declared_amount,
                 )
-                s.submitted_now = True
+                # Update status in this run
+                row.statut = "ok"
+                row.id_ts  = ts_id
+                # Save to state
                 for b in g.bookings:
                     st.mark_declared(
                         records,
@@ -229,167 +228,177 @@ def process_month(
                     )
                     if write_beds24_note:
                         rec = records[b.book_id]
-                        ok  = set_booking_custom1(b.book_id, st.beds24_note_value(rec))
+                        ok  = set_booking_custom1(b.book_id, st.beds24_note_value(rec, row))
                         if ok:
                             rec.beds24_noted = True
             except Exception as e:
-                s.submit_error = str(e)
-                s.warnings.append(str(e))
+                row.statut = "err ↑"
+                row.warnings.append(f"erreur soumission: {e}")
 
-        # Save n/a (0€) groups to state so they don't resurface
-        for s in statuses:
-            if not s.is_platform and not s.group.has_amount:
-                for b in s.group.bookings:
-                    if not st.is_tracked(records, b.book_id):
-                        st.mark_gift(records, b.book_id, b.unit,
-                                     b.check_in.isoformat(), b.check_out.isoformat())
+        # Save n/a groups to state (0€ stay = not declarable)
+        for row, g in zip(rows, all_groups):
+            if not row.origine == "Direct" or row.ttc_b24 > 0:
+                continue
+            for b in g.bookings:
+                if not st.is_tracked(records, b.book_id):
+                    st.mark_gift(records, b.book_id, b.unit,
+                                 b.check_in.isoformat(), b.check_out.isoformat())
 
         st.save(records)
+        # Rebuild rows to reflect updated state
+        rows = [_build_row(g, records) for g in all_groups]
 
-    return MonthResult(year=year, month=month, statuses=statuses), all_bookings
-
-
-# ── Per-month compact status output (printed BEFORE the recap table) ──────────
-
-def print_month_status(r: MonthResult, dry_run: bool) -> None:
-    label = date(r.year, r.month, 1).strftime("%B %Y")
-    print(f"\n── {label} {'─' * (52 - len(label))}")
-
-    for s in r.statuses:
-        g     = s.group
-        units = "+".join(g.units)
-        d_str = f"{g.check_in.strftime('%d/%m')}→{g.check_out.strftime('%d/%m')}"
-        stat  = s.status_str()
-
-        if s.is_platform:
-            # Platforms: minimal line, no declaration amounts
-            print(f"  [{stat:6s}] {units:18s} {d_str}  {s.source}")
-            continue
-
-        if g.has_amount:
-            print(f"  [{stat:6s}] {units:18s} {d_str}  "
-                  f"{g.adults}A/{g.children}C  {g.declared_amount:.0f}€ HT")
-        else:
-            print(f"  [{stat:6s}] {units:18s} {d_str}  n/a")
-
-        # Print inline warnings + Beds24 links (these are the only notes in the output)
-        for w in s.warnings:
-            print(f"           ↑ {w}")
-        if s.warnings or s.submit_error:
-            for b in g.bookings:
-                print(f"             {BEDS24_BOOKING_URL.format(book_id=b.book_id)}")
-
-    pending = [s for s in r.statuses
-               if not s.is_platform and not s.declared and not s.submitted_now
-               and s.group.has_amount and s.group.has_occupants]
-    if dry_run and pending:
-        print(f"  → {len(pending)} à soumettre (--fill)")
+    return rows
 
 
-# ── Unified recap table ───────────────────────────────────────────────────────
+# ── Per-run output (ONLY warnings/errors, one line each) ──────────────────────
 
-_NA = "—"
+def print_run_warnings(month_label: str, rows: list[Row]) -> None:
+    issues = [r for r in rows if r.warnings]
+    if not issues:
+        return
+    print(f"\n── {month_label}")
+    for row in issues:
+        prefix = f"  {row.check_in.strftime('%d/%m')}→{row.check_out.strftime('%d/%m')} [{row.units}]"
+        for w in row.warnings:
+            print(f"  ⚠ {prefix}  {w}")
 
-def _fmt(v: float | None, w: int = 9) -> str:
-    return f"{v:>{w}.2f}" if v is not None else f"{_NA:>{w}}"
 
-def print_recap_table(rows: list[RecapRow], csv_path: str) -> None:
-    # Sort all rows by check_in
-    rows = sorted(rows, key=lambda r: r.check_in)
+# ── Recap table ───────────────────────────────────────────────────────────────
 
-    W = 120
+_D = "—"
+
+def _v(x: Optional[float], w: int = 9) -> str:
+    return f"{x:>{w}.2f}" if x is not None else f"{_D:>{w}}"
+
+def _s(x: str, w: int) -> str:
+    """Truncate string to width."""
+    return x[:w] if len(x) > w else x
+
+def print_recap(rows: list[Row], csv_path: str) -> None:
+    rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
+
+    # ── Terminal table ────────────────────────────────────────────────────────
+    # Column widths
+    CW = {
+        "date":    8,   # dd/mm/aa
+        "nuits":   5,
+        "units":   18,
+        "pers":    2,   # A and E each
+        "ids_b24": 14,  # truncated if needed
+        "origine": 12,
+        "money":   9,
+        "id_ts":   10,
+        "statut":  9,
+    }
+
+    def _date(d: date) -> str:
+        return d.strftime("%d/%m/%y")
+
+    HDR = (
+        f"  {'Début':8} {'Fin':8} {'N':>5}  "
+        f"{'Gîte(s)':18} {'A':>2} {'E':>2}  "
+        f"{'ID Beds24':14} {'Origine':12}  "
+        f"{'TTC B24':>9} {'Taxe B24':>9}  "
+        f"{'ID TS':10}  "
+        f"{'Base HT':>9} {'Taxe Séj.':>9} {'Total':>9}  "
+        f"Statut"
+    )
+    W = len(HDR) + 2
     print(f"\n{'═' * W}")
     print(f"  RÉCAP")
     print(f"{'═' * W}\n")
-
-    HDR = (f"  {'Début→Fin':12s} {'N':>3}  {'Gîte(s)':20s} {'Source':12s}"
-           f" {'A':>2} {'E':>2}"
-           f" {'TTC B24':>9} {'Taxe B24':>9}"
-           f" {'HT décl.':>9} {'Taxe 5%':>8} {'TTC+Taxe':>9}"
-           f"  Statut")
     print(HDR)
     print(f"  {'─' * (W - 2)}")
 
-    # Accumulators for totals
-    tot_b24_ttc   = 0.0
-    tot_b24_taxe  = 0.0
-    tot_ht        = 0.0
-    tot_taxe5     = 0.0
-    tot_ttcrecalc = 0.0
-    tot_plat_ttc  = 0.0
+    # Accumulators
+    acc = dict(ttc=0.0, taxe_b=0.0, ht=0.0, taxe_s=0.0, total=0.0, plat=0.0)
 
     for row in rows:
-        d_str = (f"{row.check_in.strftime('%d/%m')}→"
-                 f"{row.check_out.strftime('%d/%m')}")
-        line = (f"  {d_str:12s} {row.nights:>3}n  {row.units:20s} {row.source:12s}"
-                f" {row.adults:>2} {row.children:>2}"
-                f" {_fmt(row.beds24_ttc):>9} {_fmt(row.beds24_taxe if row.beds24_taxe else None):>9}"
-                f" {_fmt(row.ht_decl):>9} {_fmt(row.taxe_5pct):>8} {_fmt(row.ttc_recalc):>9}"
-                f"  {row.status}")
+        ids_short = _s(row.ids_b24, 14)
+        id_ts_s   = _s(row.id_ts, 10)
+        line = (
+            f"  {_date(row.check_in):8} {_date(row.check_out):8} {row.nights:>5}  "
+            f"{row.units:18} {row.adults:>2} {row.children:>2}  "
+            f"{ids_short:14} {row.origine:12}  "
+            f"{_v(row.ttc_b24):>9} {_v(row.taxe_b24 or None):>9}  "
+            f"{id_ts_s:10}  "
+            f"{_v(row.base_ht):>9} {_v(row.taxe_sejour):>9} {_v(row.total):>9}  "
+            f"{row.statut}"
+        )
         print(line)
 
-        if row.source != "Direct":
-            tot_plat_ttc += row.beds24_ttc
+        if row.origine == "Direct":
+            acc["ttc"]  += row.ttc_b24
+            acc["taxe_b"] += row.taxe_b24
+            if row.base_ht is not None:
+                acc["ht"]    += row.base_ht
+                acc["taxe_s"] += row.taxe_sejour  # type: ignore[operator]
+                acc["total"]  += row.total         # type: ignore[operator]
         else:
-            tot_b24_ttc  += row.beds24_ttc
-            tot_b24_taxe += row.beds24_taxe
-            if row.ht_decl is not None:
-                tot_ht        += row.ht_decl
-                tot_taxe5     += row.taxe_5pct  # type: ignore[operator]
-                tot_ttcrecalc += row.ttc_recalc  # type: ignore[operator]
+            acc["plat"] += row.ttc_b24
 
-    # Column prefix width = 2 + 12 + 1 + 3 + 3 + 20 + 1 + 12 + 1 + 2 + 1 + 2 = 60
-    _PFX = 60
+    # Totals row — prefix chars = 2+8+1+8+1+5+2+18+1+2+1+2+2+14+1+12 = 80
+    # then "  " before TTC → 82 total chars before money columns
+    PFX = 80
     print(f"  {'─' * (W - 2)}")
-    print(f"  {'TOTAUX DÉCLARABLES':{_PFX - 2}s}"
-          f" {_fmt(tot_b24_ttc):>9} {_fmt(tot_b24_taxe if tot_b24_taxe else None):>9}"
-          f" {_fmt(tot_ht):>9} {_fmt(tot_taxe5):>8} {_fmt(tot_ttcrecalc):>9}")
-    if tot_plat_ttc:
-        print(f"  {'PLATEFORMES (brut Beds24)':{_PFX - 2}s}"
-              f" {_fmt(tot_plat_ttc):>9}")
+    print(
+        f"  {'TOTAUX DIRECTS':{PFX}}"
+        f"  {_v(acc['ttc']):>9} {_v(acc['taxe_b'] or None):>9}  "
+        f"{'':10}  "
+        f"{_v(acc['ht']):>9} {_v(acc['taxe_s']):>9} {_v(acc['total']):>9}"
+    )
+    if acc["plat"]:
+        print(f"  {'PLATEFORMES':{PFX}}  {_v(acc['plat']):>9}")
 
     print(f"\n{'═' * W}\n")
 
-    # ── CSV export ────────────────────────────────────────────────────────────
+    # ── CSV ───────────────────────────────────────────────────────────────────
+    HEADERS = [
+        "Début", "Fin", "Nuits", "Gîte(s)", "Adultes", "Enfants",
+        "ID Beds24", "Origine",
+        "TTC B24", "Taxe B24",
+        "ID Taxesejour",
+        "Base HT", "Taxe Séjour", "Total",
+        "Statut",
+    ]
+
+    def _csv_money(x: Optional[float]) -> str:
+        return f"{x:.2f}".replace(".", ",") if x is not None else ""
+
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f, delimiter=";")
-        writer.writerow([
-            "Début", "Fin", "Nuits", "Gîte(s)", "Source", "Adultes", "Enfants",
-            "TTC Beds24", "Taxe Beds24", "HT décl.", "Taxe 5%", "TTC+Taxe", "Statut",
-        ])
+        w = csv.writer(f, delimiter=";")
+        w.writerow(HEADERS)
         for row in rows:
-            writer.writerow([
-                row.check_in.isoformat(),
-                row.check_out.isoformat(),
+            w.writerow([
+                row.check_in.strftime("%d/%m/%Y"),
+                row.check_out.strftime("%d/%m/%Y"),
                 row.nights,
                 row.units,
-                row.source,
                 row.adults,
                 row.children,
-                f"{row.beds24_ttc:.2f}".replace(".", ","),
-                f"{row.beds24_taxe:.2f}".replace(".", ",") if row.beds24_taxe else "",
-                f"{row.ht_decl:.2f}".replace(".", ",") if row.ht_decl is not None else "",
-                f"{row.taxe_5pct:.2f}".replace(".", ",") if row.taxe_5pct is not None else "",
-                f"{row.ttc_recalc:.2f}".replace(".", ",") if row.ttc_recalc is not None else "",
-                row.status,
+                row.ids_b24,
+                row.origine,
+                _csv_money(row.ttc_b24),
+                _csv_money(row.taxe_b24 or None),
+                row.id_ts,
+                _csv_money(row.base_ht),
+                _csv_money(row.taxe_sejour),
+                _csv_money(row.total),
+                row.statut,
             ])
-        # Totals
-        writer.writerow([])
-        writer.writerow([
-            "TOTAUX DÉCLARABLES", "", "", "", "", "", "",
-            f"{tot_b24_ttc:.2f}".replace(".", ","),
-            f"{tot_b24_taxe:.2f}".replace(".", ",") if tot_b24_taxe else "",
-            f"{tot_ht:.2f}".replace(".", ","),
-            f"{tot_taxe5:.2f}".replace(".", ","),
-            f"{tot_ttcrecalc:.2f}".replace(".", ","),
-            "",
-        ])
-        if tot_plat_ttc:
-            writer.writerow([
-                "PLATEFORMES (brut Beds24)", "", "", "", "", "", "",
-                f"{tot_plat_ttc:.2f}".replace(".", ","),
-                "", "", "", "", "",
-            ])
+        w.writerow([])
+        w.writerow(
+            ["TOTAUX DIRECTS"] + [""] * 7
+            + [_csv_money(acc["ttc"]), _csv_money(acc["taxe_b"] or None), ""]
+            + [_csv_money(acc["ht"]), _csv_money(acc["taxe_s"]), _csv_money(acc["total"]), ""]
+        )
+        if acc["plat"]:
+            w.writerow(
+                ["PLATEFORMES"] + [""] * 7
+                + [_csv_money(acc["plat"])] + [""] * 6
+            )
+
     print(f"  Récap exporté: {csv_path}\n")
 
 
@@ -404,7 +413,6 @@ def main() -> None:
     client  = TaxeSejourClient()
     client.login()
 
-    # Determine months
     if args.month:
         try:
             year, month = map(int, args.month.split("-"))
@@ -428,26 +436,15 @@ def main() -> None:
     print(f"  Taxe de séjour — {label}  [{mode}]")
     print(f"{'═' * 64}")
 
-    all_rows: list[RecapRow] = []
-
+    all_rows: list[Row] = []
     for y, m, pid in months:
-        result, all_bookings = process_month(
-            y, m, pid, client, records, fill=fill, write_beds24_note=write_note
-        )
-        print_month_status(result, dry_run=not fill)
-        for s in result.statuses:
-            all_rows.append(s.to_recap_row())
+        month_rows = process_month(y, m, pid, client, records,
+                                   fill=fill, write_beds24_note=write_note)
+        month_label = date(y, m, 1).strftime("%B %Y")
+        print_run_warnings(month_label, month_rows)
+        all_rows.extend(month_rows)
 
-    # Summary count
-    pending = sum(
-        1 for row in all_rows
-        if row.status.startswith("add") and row.source == "Direct" and row.ht_decl is not None
-    )
-    if not fill and pending:
-        print(f"\n  {pending} séjour(s) à soumettre. Utiliser --fill pour envoyer.")
-
-    # Unified recap table — always last
-    print_recap_table(all_rows, args.csv)
+    print_recap(all_rows, args.csv)
 
 
 if __name__ == "__main__":
