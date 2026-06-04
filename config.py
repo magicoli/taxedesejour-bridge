@@ -85,12 +85,16 @@ def total_ttc(ht: float, adults: int, children: int) -> float:
     return ht * (1 + VAT_RATE) + taxe_sejour(ht, adults, children)
 
 # apiSource codes for platforms that collect taxe de séjour on our behalf.
-# These still appear in the full recap but are NOT to be declared by us.
+# Shown in the recap for reference but NOT declared by us.
+# 28 (generic / our-website iCal import) is treated as Direct.
 PLATFORM_SOURCES: dict[str, str] = {
     "19": "Booking.com",
-    "29": "Airbnb (iCal)",
-    "46": "Airbnb (API)",
+    "29": "Airbnb",   # Airbnb iCal feed
+    "46": "Airbnb",   # Airbnb API
     # Add Expedia code when known
 }
-# iCal channel without known platform origin — treated as direct but flagged
-ICAL_SOURCE = "28"
+
+# Beds24 booking status (from the admin UI <select>):
+#   0 Cancelled | 1 Confirmed | 2 New | 3 Request | 4 Black | 5 Inquiry
+# Only Confirmed and New are real bookings to process.
+VALID_STATUSES: set[str] = {"1", "2"}

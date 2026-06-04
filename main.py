@@ -23,20 +23,6 @@ from beds24 import Booking, BookingGroup, get_bookings, group_bookings, set_book
 from config import BEDS24_BOOKING_URL
 from taxesejour import TaxeSejourClient
 
-# ── Platform normalisation ────────────────────────────────────────────────────
-_PLATFORM_DISPLAY: dict[str, str] = {
-    "19": "Booking.com",
-    "29": "Airbnb",
-    "46": "Airbnb",
-    # Add Expedia code when known
-}
-
-def _source_label(api_source: str) -> str:
-    return _PLATFORM_DISPLAY.get(api_source, "Direct")
-
-def _is_platform(api_source: str) -> bool:
-    return api_source in _PLATFORM_DISPLAY
-
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -92,9 +78,8 @@ def _build_row(
     g: BookingGroup, records: dict[str, st.DeclarationRecord]
 ) -> Row:
     """Compute all fields for a booking group."""
-    is_plat = any(_is_platform(b.api_source) for b in g.bookings)
-    source  = next((_source_label(b.api_source)
-                    for b in g.bookings if _is_platform(b.api_source)), "")
+    is_plat = g.is_platform
+    source  = ", ".join(g.platform_names) if is_plat else ""
 
     # IDs
     ids_b24 = ",".join(b.book_id for b in g.bookings)

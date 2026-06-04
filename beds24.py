@@ -17,8 +17,8 @@ from config import (
     BEDS24_API_URL,
     BEDS24_PROP_KEY,
     BEDS24_ROOMS,
-    ICAL_SOURCE,
     PLATFORM_SOURCES,
+    VALID_STATUSES,
     ht_from_total,
     taxe_sejour,
 )
@@ -72,11 +72,7 @@ class Booking:
 
     @property
     def platform_name(self) -> str:
-        if self.api_source in PLATFORM_SOURCES:
-            return PLATFORM_SOURCES[self.api_source]
-        if self.api_source == ICAL_SOURCE:
-            return "iCal (direct?)"
-        return "Direct"
+        return PLATFORM_SOURCES.get(self.api_source, "Direct")
 
     @property
     def total_received(self) -> float:
@@ -113,8 +109,6 @@ class Booking:
             w.append("montant nul")
         if not self.has_occupants:
             w.append("occupants manquants")
-        if self.api_source == ICAL_SOURCE:
-            w.append("iCal — vérifier si direct")
         return w
 
 
@@ -214,9 +208,14 @@ def get_bookings(year: int, month: int) -> list[Booking]:
     bookings: list[Booking] = []
 
     for row in raw_list:
-        status = str(row.get("status", "2"))
-        if status in ("3", "4", "5"):
+        # Keep only Confirmed (1) and New (2). All other statuses — Cancelled (0),
+        # Request (3), Black (4), Inquiry (5) — are ignored. (iCal is a valid
+        # source; the status, not the channel, decides.)
+        status = str(row.get("status") or "")
+        if status not in VALID_STATUSES:
             continue
+
+        api_source = str(row.get("apiSource") or "0")
 
         room_id = int(row.get("roomId") or 0)
         unit = BEDS24_ROOMS.get(room_id)
@@ -230,6 +229,9 @@ def get_bookings(year: int, month: int) -> list[Booking]:
 
         check_in  = date.fromisoformat(check_in_str)
         check_out = date.fromisoformat(check_out_str) + timedelta(days=1)
+
+        adults   = int(row.get("numAdult") or 0)
+        children = int(row.get("numChild") or 0)
 
         price_field = float(row.get("price") or 0)
         acc_ttc, taxe_inv, inv_lines = _parse_invoice(row.get("invoice") or [])
@@ -253,9 +255,9 @@ def get_bookings(year: int, month: int) -> list[Booking]:
             room_id          = room_id,
             check_in         = check_in,
             check_out        = check_out,
-            adults           = int(row.get("numAdult") or 0),
-            children         = int(row.get("numChild") or 0),
-            api_source       = str(row.get("apiSource") or "0"),
+            adults           = adults,
+            children         = children,
+            api_source       = api_source,
             guest            = guest,
             guest_email      = str(row.get("guestEmail") or "").strip(),
             master_id        = str(row.get("masterId") or "").strip(),
@@ -355,9 +357,6 @@ class BookingGroup:
             w.append("montant nul")
         if not self.has_occupants:
             w.append("occupants manquants")
-        sources = set(b.api_source for b in self.bookings)
-        if ICAL_SOURCE in sources:
-            w.append("iCal — vérifier si direct")
         return w
 
     @property
