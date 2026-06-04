@@ -126,9 +126,11 @@ def beds24_note_value(rec: DeclarationRecord, row: "Any | None" = None) -> str:
     Same 15 columns as the recap table, same order, vertical format.
     `row` is the Row dataclass from main.py (passed to avoid circular import).
     """
-    from config import taxe_sejour, total_ttc
-    taxe  = taxe_sejour(rec.declared_amount_ht, rec.declared_adults, rec.declared_children)
-    total = total_ttc(rec.declared_amount_ht, rec.declared_adults, rec.declared_children)
+    # Financial figures come from the already-computed Row (site-exact taxe,
+    # total = amount received), avoiding any recompute/drift.
+    net   = row.base_ht if row and row.base_ht is not None else rec.declared_amount_ht
+    taxe  = row.taxe_sejour if row and row.taxe_sejour is not None else 0.0
+    total = row.total if row and row.total is not None else net
 
     lines = [
         f"Checkin: {rec.check_in}",
@@ -149,7 +151,7 @@ def beds24_note_value(rec: DeclarationRecord, row: "Any | None" = None) -> str:
     if rec.ts_stay_id:
         lines.append(f"ID Taxesejour: {rec.ts_stay_id}")
     lines += [
-        f"Net: {rec.declared_amount_ht:.2f}€",
+        f"Net: {net:.2f}€",
         f"Taxe séjour: {taxe:.2f}€",
         f"Total: {total:.2f}€",
         f"Statut: déclaré le {rec.declared_at[:10]}",

@@ -58,7 +58,6 @@ TAXE_RATE = 0.05
 
 
 # ── Tax formula (single source of truth) ──────────────────────────────────────
-# total_ttc = ht * (1 + VAT_RATE + TAXE_RATE * adults/guests)
 # Only adults are subject to the taxe de séjour; children are exempt.
 
 def ts_ratio(adults: int, children: int) -> float:
@@ -67,22 +66,33 @@ def ts_ratio(adults: int, children: int) -> float:
     return adults / guests if guests > 0 else 0.0
 
 
-def ht_from_total(total_ttc: float, adults: int, children: int) -> float:
-    """Recover base HT from the total actually received.
+def ht_from_total(total_received: float, adults: int, children: int) -> float:
+    """Net (HT accommodation) to submit, derived from the total received.
 
-    Inverts: total_ttc = ht * (1 + VAT_RATE + TAXE_RATE * adults/guests)
+    Approximate inverse of total = ht*(1+VAT) + ht*rate*ratio. The submitted
+    net is what the site divides per night/guest to compute the taxe; the small
+    rounding gap (site rounds taxe per night) lands in the implicit VAT, never
+    in the declared total (which we keep equal to what was actually received).
     """
-    return total_ttc / (1 + VAT_RATE + TAXE_RATE * ts_ratio(adults, children))
+    return round(total_received / (1 + VAT_RATE + TAXE_RATE * ts_ratio(adults, children)), 2)
 
 
-def taxe_sejour(ht: float, adults: int, children: int) -> float:
-    """Taxe de séjour due: ht * (adults/guests) * TAXE_RATE."""
-    return ht * ts_ratio(adults, children) * TAXE_RATE
+def taxe_sejour(net: float, nights: int, adults: int, children: int) -> float:
+    """Taxe de séjour, computed EXACTLY like nordbasseterre.taxesejour.fr:
 
+        tarif_nuit = round(net / nights / guests, 2)   # HT per person per night
+        taxe_nuit  = round(tarif_nuit * TAXE_RATE, 2)  # per night, rounded
+        taxe       = taxe_nuit * nights * adults        # adults only
 
-def total_ttc(ht: float, adults: int, children: int) -> float:
-    """Total = HT + TVA + taxe de séjour."""
-    return ht * (1 + VAT_RATE) + taxe_sejour(ht, adults, children)
+    Matching the site to the cent is required so our declarations reconcile
+    with the amounts the site asks (and with other official filings).
+    """
+    guests = adults + children
+    if guests == 0 or nights == 0:
+        return 0.0
+    tarif_nuit = round(net / nights / guests, 2)
+    taxe_nuit  = round(tarif_nuit * TAXE_RATE, 2)
+    return round(taxe_nuit * nights * adults, 2)
 
 # apiSource codes for platforms that collect taxe de séjour on our behalf.
 # Shown in the recap for reference but NOT declared by us.

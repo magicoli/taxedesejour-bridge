@@ -143,19 +143,40 @@ class TaxeSejourClient:
         all_stays = _extract_calendar_events(html)
         return [s for s in all_stays if s.start_date.year == year and s.start_date.month == month]
 
-    def get_declared_date_set(self) -> set[tuple]:
-        """Return {(start_date, end_date)} of ALL stays already declared on the site.
+    def get_declared_stays_detail(
+        self, year: int, month: int, period_id: str
+    ) -> dict[tuple, tuple]:
+        """Return {(start_date, end_date): (stay_id, taxe)} for a declared month.
 
-        Read from the calendar embedded in the stay form (covers every period,
-        not just one month). Used to avoid creating duplicate declarations for
-        stays that already exist on the site — including ones added manually.
+        Parsed from the month view, which lists each declared stay with its
+        taxesejour.fr ID, date range, and the taxe amount the site computed.
+        Used to capture the site ID, avoid duplicates, and compare the site's
+        taxe against our own.
         """
-        path = f"/v2/host/stay/new/{TS_REGISTRE_ID}?month={date.today().strftime('%Y-%m-01')}"
-        html = self._get_frame(path, "stay-form-frame")
-        if "webix-calendar-events-value" not in html:
-            self._ensure_logged_in()
-            html = self._session.get(f"{TS_URL}{path}").text
-        return {(s.start_date, s.end_date) for s in _extract_calendar_events(html)}
+        month_str = f"{year}-{month:02d}-01"
+        path = (f"/v2/host/declarations/index/{TS_HOST_ID}/{TS_LODGING_ID}"
+                f"/{year}/{period_id}/{month_str}")
+        html = self._get_frame(path, "right-turbo-pane")
+
+        result: dict[tuple, tuple] = {}
+        matches = list(re.finditer(r"/stay/(\d+)", html))
+        for i, m in enumerate(matches):
+            seg = html[m.start(): matches[i + 1].start() if i + 1 < len(matches) else len(html)]
+            stay_id = m.group(1)
+            dm = re.search(
+                r"Du\s+(\d{2})/(\d{2})(?:/(\d{4}))?\s+au\s+(\d{2})/(\d{2})/(\d{4})", seg
+            )
+            if not dm:
+                continue
+            d1, mo1, y1, d2, mo2, y2 = dm.groups()
+            y2 = int(y2)
+            y1 = int(y1) if y1 else (y2 if int(mo1) <= int(mo2) else y2 - 1)
+            start = date(y1, int(mo1), int(d1))
+            end   = date(y2, int(mo2), int(d2))
+            am = re.search(r"([\d  ]+,\d{2})\s*€", seg)
+            taxe = float(am.group(1).replace(" ", "").replace(" ", "").replace(",", ".")) if am else 0.0
+            result[(start, end)] = (stay_id, taxe)
+        return result
 
     def get_month_status(self, year: int, month: int) -> str:
         """Return declaration status string for the month (e.g. 'À déclarer', 'Déclaré')."""

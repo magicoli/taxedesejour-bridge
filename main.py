@@ -77,19 +77,22 @@ class Row:
 def _build_row(
     g: BookingGroup,
     records: dict[str, st.DeclarationRecord],
-    site_dates: set[tuple],
+    site_detail: dict[tuple, tuple],
 ) -> Row:
     """Compute all fields for a booking group.
 
-    `site_dates` = {(check_in, check_out)} already declared on taxesejour.fr
-    (including manual entries) — used to mark groups as already declared and
-    avoid creating duplicates.
+    `site_detail` = {(check_in, check_out): (stay_id, taxe)} already declared on
+    taxesejour.fr (incl. manual entries) — used to capture the site ID, avoid
+    duplicates, and compare the site's taxe against ours.
     """
     is_plat = g.is_platform
     source  = ", ".join(g.platform_names) if is_plat else ""
 
-    # Already on the site (by exact dates)? Covers manual declarations too.
-    on_site = (g.check_in, g.check_out) in site_dates
+    # Match against what's already declared on the site (exact dates).
+    site_match = site_detail.get((g.check_in, g.check_out))
+    on_site    = site_match is not None
+    site_id    = site_match[0] if on_site else ""
+    site_taxe  = site_match[1] if on_site else None
 
     # IDs
     ids_b24 = ",".join(b.book_id for b in g.bookings)
@@ -126,6 +129,14 @@ def _build_row(
             warn = (f"montant modifié depuis déclaration: {old_ht:.2f}→{new_ht:.2f}€ HT "
                     f"(Δ {diff:+.2f}€) | {BEDS24_BOOKING_URL.format(book_id=bid)}")
             action_warnings.append(warn)
+        # Site declaration exists but its taxe ≠ what we compute → must review
+        # (manual entry differs, or amount changed since). Not a clean "ok".
+        if on_site and g.has_occupants and abs((site_taxe or 0) - g.computed_taxe) > 0.005:
+            action_warnings.append(
+                f"taxe site {site_taxe:.2f}€ ≠ calculée {g.computed_taxe:.2f}€ "
+                f"(Δ {g.computed_taxe - (site_taxe or 0):+.2f}€) — vérifier déclaration ts#{site_id}"
+            )
+        # Beds24 provisional taxe ≠ what we compute (informational)
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff = g.computed_taxe - g.taxe_in_invoice
             warn = (f"taxe encaissée {g.taxe_in_invoice:.2f}€ ≠ déclarée "
@@ -134,6 +145,13 @@ def _build_row(
                 warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
             info_warnings.append(warn)
     warnings = action_warnings + info_warnings
+
+    # taxesejour ID: prefer the live site match, fall back to local state
+    id_ts = site_id or id_ts
+    # site taxe mismatch → distinct status
+    site_taxe_mismatch = (
+        on_site and g.has_occupants and abs((site_taxe or 0) - g.computed_taxe) > 0.005
+    )
 
     # Declaration amounts (None for platforms and 0€ bookings).
     # total == g.total_received by construction (ht*(1+VAT) + ts == reçu).
@@ -149,10 +167,13 @@ def _build_row(
         statut = "—"
     elif not g.has_amount:
         statut = "n/a"
+    elif on_site and site_taxe_mismatch:
+        statut = "diff !"          # on site but amount differs — review
+    elif on_site:
+        statut = "ok"             # on site and matches
     elif all_tracked and amount_changes:
-        statut = f"update !"
-    elif all_tracked or on_site:
-        # Already declared (locally tracked or present on the site)
+        statut = "update !"
+    elif all_tracked:
         statut = f"ok{suffix}"
     else:
         statut = f"add{suffix}"
@@ -192,8 +213,8 @@ def process_month(
 ) -> list[Row]:
     all_bookings = get_bookings(year, month)
     all_groups   = group_bookings(all_bookings)
-    site_dates   = client.get_declared_date_set()
-    rows         = [_build_row(g, records, site_dates) for g in all_groups]
+    site_detail  = client.get_declared_stays_detail(year, month, period_id)
+    rows         = [_build_row(g, records, site_detail) for g in all_groups]
 
     if fill:
         for row, g in zip(rows, all_groups):

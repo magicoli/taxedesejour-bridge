@@ -81,18 +81,13 @@ class Booking:
 
     @property
     def declared_amount(self) -> float:
-        """Net, back-calculated from the total actually received.
-
-        ht = total_received / (1 + VAT_RATE + TAXE_RATE * adults/guests)
-        so that ht*(1+VAT) + taxe == total_received by construction,
-        whatever taxe was (or wasn't) provisionally charged.
-        """
+        """Net (HT) to submit, derived from the total actually received."""
         return ht_from_total(self.total_received, self.adults, self.children)
 
     @property
     def computed_taxe(self) -> float:
-        """Taxe de séjour due: ht * (adults/guests) * TAXE_RATE."""
-        return taxe_sejour(self.declared_amount, self.adults, self.children)
+        """Taxe de séjour, site method (per-night rounded)."""
+        return taxe_sejour(self.declared_amount, self.nights, self.adults, self.children)
 
     @property
     def has_amount(self) -> bool:
@@ -327,7 +322,7 @@ class BookingGroup:
 
     @property
     def declared_amount(self) -> float:
-        """Net computed on the MERGED totals (not summed per booking).
+        """Net (HT) computed on the MERGED totals (one declaration).
 
         Matches how taxesejour.fr computes: one declaration, merged
         adults/guests ratio applied to the base HT we submit.
@@ -336,7 +331,8 @@ class BookingGroup:
 
     @property
     def computed_taxe(self) -> float:
-        return taxe_sejour(self.declared_amount, self.adults, self.children)
+        """Taxe de séjour, site method (per-night rounded) on merged totals."""
+        return taxe_sejour(self.declared_amount, self.nights, self.adults, self.children)
 
     @property
     def is_platform(self) -> bool:
