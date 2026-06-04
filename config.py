@@ -36,9 +36,11 @@ _b24_canbt    = _cfg.get("beds24", {}).get("canbt", {})
 _b24_mosaiques = _cfg["mosaiques"]["beds24"]
 
 BEDS24_API_KEY  = _b24_canbt.get("api_key") or _b24_mosaiques["api_key"]
-BEDS24_PROP_KEY = _b24_canbt.get("prop_key") or _b24_mosaiques["prop_key"]
-# canbt key is account-level and may not need a propKey
-BEDS24_USE_PROP_KEY = not _b24_canbt.get("api_key")  # only needed for mosaiques key
+# propKey identifies the property; always use mosaiques prop_key regardless of which API key
+BEDS24_PROP_KEY = _b24_mosaiques["prop_key"]
+
+# Beds24 booking URL (for direct links in reports)
+BEDS24_BOOKING_URL = "https://beds24.com/control3.php?pagetype=bookings&bookid={book_id}"
 
 # Room IDs → gîte name
 BEDS24_ROOMS: dict[int, str] = {

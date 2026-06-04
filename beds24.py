@@ -17,7 +17,6 @@ from config import (
     BEDS24_API_URL,
     BEDS24_PROP_KEY,
     BEDS24_ROOMS,
-    BEDS24_USE_PROP_KEY,
     ICAL_SOURCE,
     PLATFORM_SOURCES,
     TAXE_RATE,
@@ -153,9 +152,7 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
     first = date(year, month, 1)
     last  = date(year, month, calendar.monthrange(year, month)[1])
 
-    auth: dict = {"apiKey": BEDS24_API_KEY}
-    if BEDS24_USE_PROP_KEY:
-        auth["propKey"] = BEDS24_PROP_KEY
+    auth: dict = {"apiKey": BEDS24_API_KEY, "propKey": BEDS24_PROP_KEY}
 
     payload = {
         "authentication": auth,
@@ -170,13 +167,10 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
     resp.raise_for_status()
     data = resp.json()
 
-    # IP restriction on canbt key → auto-fallback to mosaiques key
+    # IP restriction on canbt key → silent fallback to mosaiques key
     if isinstance(data, dict) and data.get("errorCode") == "1022":
         fallback = _get_fallback_auth()
         if fallback:
-            import sys
-            print(f"  [info] Clé canbt bloquée (IP restriction) → fallback mosaiques",
-                  file=sys.stderr)
             payload["authentication"] = fallback
             resp = requests.post(BEDS24_API_URL + "getBookings", json=payload, timeout=30)
             resp.raise_for_status()
@@ -184,7 +178,8 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
         else:
             raise RuntimeError(
                 "Clé Beds24 canbt bloquée (IP restriction). "
-                "Désactiver la restriction IP dans les paramètres Beds24."
+                "Désactiver la restriction IP dans les paramètres Beds24, "
+                f"ou ajouter [mosaiques.beds24] dans pa.toml comme fallback."
             )
 
     if isinstance(data, dict) and data.get("error"):

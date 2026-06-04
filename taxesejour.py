@@ -184,6 +184,20 @@ class TaxeSejourClient:
 
         return result
 
+    def get_pending_months(self, year: int) -> list[tuple[int, int]]:
+        """Return (year, month) tuples for months with status 'À déclarer'.
+
+        Skips 'Déclaré' (already closed) and 'En anticipation' (future).
+        """
+        periods = self._find_periods(year)
+        pending = []
+        for months in periods.values():
+            for month_str, status in sorted(months.items()):
+                if "déclarer" in status.lower():
+                    y, m, _ = month_str.split("-")
+                    pending.append((int(y), int(m)))
+        return sorted(pending)
+
     # ── Writing ────────────────────────────────────────────────────────────────
 
     def add_stay(
