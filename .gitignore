@@ -2,3 +2,4 @@ __pycache__/
 .venv/
 data/*.csv
 data/declarations.json
+.DS_Store
