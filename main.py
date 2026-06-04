@@ -75,11 +75,21 @@ class Row:
 # ── GroupStatus → Row ─────────────────────────────────────────────────────────
 
 def _build_row(
-    g: BookingGroup, records: dict[str, st.DeclarationRecord]
+    g: BookingGroup,
+    records: dict[str, st.DeclarationRecord],
+    site_dates: set[tuple],
 ) -> Row:
-    """Compute all fields for a booking group."""
+    """Compute all fields for a booking group.
+
+    `site_dates` = {(check_in, check_out)} already declared on taxesejour.fr
+    (including manual entries) — used to mark groups as already declared and
+    avoid creating duplicates.
+    """
     is_plat = g.is_platform
     source  = ", ".join(g.platform_names) if is_plat else ""
+
+    # Already on the site (by exact dates)? Covers manual declarations too.
+    on_site = (g.check_in, g.check_out) in site_dates
 
     # IDs
     ids_b24 = ",".join(b.book_id for b in g.bookings)
@@ -141,7 +151,8 @@ def _build_row(
         statut = "n/a"
     elif all_tracked and amount_changes:
         statut = f"update !"
-    elif all_tracked:
+    elif all_tracked or on_site:
+        # Already declared (locally tracked or present on the site)
         statut = f"ok{suffix}"
     else:
         statut = f"add{suffix}"
@@ -181,12 +192,14 @@ def process_month(
 ) -> list[Row]:
     all_bookings = get_bookings(year, month)
     all_groups   = group_bookings(all_bookings)
-    rows         = [_build_row(g, records) for g in all_groups]
+    site_dates   = client.get_declared_date_set()
+    rows         = [_build_row(g, records, site_dates) for g in all_groups]
 
     if fill:
         for row, g in zip(rows, all_groups):
-            if (row.statut not in ("add", "add !") or row.base_ht is None
-                    or not g.has_occupants):
+            # Only submit groups that are genuinely missing ("add"). Anything
+            # already on the site (status "ok") is skipped — no duplicates.
+            if row.statut not in ("add", "add !") or row.base_ht is None:
                 continue
             try:
                 ts_id = client.add_stay(
@@ -198,10 +211,8 @@ def process_month(
                     children  = g.children,
                     amount    = g.declared_amount,
                 )
-                # Update status in this run
                 row.statut = "ok"
                 row.id_ts  = ts_id
-                # Save to state
                 for b in g.bookings:
                     st.mark_declared(
                         records,
@@ -216,25 +227,13 @@ def process_month(
                     )
                     if write_beds24_note:
                         rec = records[b.book_id]
-                        ok  = set_booking_custom1(b.book_id, st.beds24_note_value(rec, row))
-                        if ok:
+                        if set_booking_custom1(b.book_id, st.beds24_note_value(rec, row)):
                             rec.beds24_noted = True
             except Exception as e:
                 row.statut = "err !"
                 row.warnings.append(f"erreur soumission: {e}")
 
-        # Save n/a groups to state (0€ stay = not declarable)
-        for row, g in zip(rows, all_groups):
-            if not row.origine == "Direct" or row.ttc_b24 > 0:
-                continue
-            for b in g.bookings:
-                if not st.is_tracked(records, b.book_id):
-                    st.mark_gift(records, b.book_id, b.unit,
-                                 b.check_in.isoformat(), b.check_out.isoformat())
-
         st.save(records)
-        # Rebuild rows to reflect updated state
-        rows = [_build_row(g, records) for g in all_groups]
 
     return rows
 

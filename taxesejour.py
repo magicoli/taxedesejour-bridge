@@ -143,6 +143,20 @@ class TaxeSejourClient:
         all_stays = _extract_calendar_events(html)
         return [s for s in all_stays if s.start_date.year == year and s.start_date.month == month]
 
+    def get_declared_date_set(self) -> set[tuple]:
+        """Return {(start_date, end_date)} of ALL stays already declared on the site.
+
+        Read from the calendar embedded in the stay form (covers every period,
+        not just one month). Used to avoid creating duplicate declarations for
+        stays that already exist on the site — including ones added manually.
+        """
+        path = f"/v2/host/stay/new/{TS_REGISTRE_ID}?month={date.today().strftime('%Y-%m-01')}"
+        html = self._get_frame(path, "stay-form-frame")
+        if "webix-calendar-events-value" not in html:
+            self._ensure_logged_in()
+            html = self._session.get(f"{TS_URL}{path}").text
+        return {(s.start_date, s.end_date) for s in _extract_calendar_events(html)}
+
     def get_month_status(self, year: int, month: int) -> str:
         """Return declaration status string for the month (e.g. 'À déclarer', 'Déclaré')."""
         # We need to find the period ID for this year first
@@ -280,10 +294,12 @@ class TaxeSejourClient:
             raise RuntimeError("Could not extract CSRF token from step 3")
 
         # ── Step 3: amount ─────────────────────────────────────────────────────
+        # French site: decimal separator must be a comma.
+        amount_fr = f"{amount:.2f}".replace(".", ",")
         r4 = self._session.post(
             f"{TS_URL}{base}?host={TS_HOST_ID}&step=3",
             data={
-                "stay[amount]":       f"{amount:.2f}",
+                "stay[amount]":       amount_fr,
                 "stay[nightPrice]":   "",
                 "stay[isNightPrice]": "",
                 "stay[_token]":       csrf3,
