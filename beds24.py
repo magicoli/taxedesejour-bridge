@@ -81,7 +81,7 @@ class Booking:
 
     @property
     def declared_amount(self) -> float:
-        """Base HT, back-calculated from the total actually received.
+        """Net, back-calculated from the total actually received.
 
         ht = total_received / (1 + VAT_RATE + TAXE_RATE * adults/guests)
         so that ht*(1+VAT) + taxe == total_received by construction,
@@ -327,7 +327,7 @@ class BookingGroup:
 
     @property
     def declared_amount(self) -> float:
-        """Base HT computed on the MERGED totals (not summed per booking).
+        """Net computed on the MERGED totals (not summed per booking).
 
         Matches how taxesejour.fr computes: one declaration, merged
         adults/guests ratio applied to the base HT we submit.

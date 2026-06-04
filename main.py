@@ -157,7 +157,7 @@ def _build_row(
         ids_b24            = ids_b24,
         origine            = source,
         ttc_b24            = g.total_received,      # Brut = total reçu du client
-        taxe_b24           = g.taxe_in_invoice,     # dont TS provisoire encaissée
+        taxe_b24           = g.taxe_in_invoice,     # dont Est. Tax provisoire encaissée
         id_ts              = id_ts,
         base_ht            = base_ht,
         taxe_sejour        = taxe_sej,
@@ -283,12 +283,12 @@ def _totals(rows: list[Row]) -> dict:
 
 def _render_terminal(rows: list[Row], acc: dict) -> None:
     HDR = (
-        f"{'Début':8} {'Fin':8} {'N':>5}  "
-        f"{'Gîte(s)':18} {'Client':18} {'Ad':>2} {'En':>2}  "
-        f"{'ID Beds24':14} {'Origine':12}  "
-        f"{'Brut':>9} {'TS Prov':>9}  "
-        f"{'ID CANBT':10}  "
-        f"{'Base HT':>9} {'TS':>9} {'TTC':>9}  "
+        f"{'Checkin':8} {'Checkout':8} {'Ngt':>5}  "
+        f"{'Accommodation':18} {'Client':18} {'Ad':>2} {'Ch':>2}  "
+        f"{'ChanMgrID':14} {'Origin':12}  "
+        f"{'Gross':>9} {'EstTax':>9}  "
+        f"{'RegisterID':10}  "
+        f"{'Net':>9} {'TouristTax':>9} {'TTC':>9}  "
         f"Statut"
     )
     SEP = "─" * len(HDR)
@@ -321,9 +321,9 @@ def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
         return f"{x:.2f}".replace(".", ",") if x is not None else ""
 
     HEADERS = [
-        "Début", "Fin", "Nuits", "Gîte(s)", "Client", "Adultes", "Enfants",
-        "ID Beds24", "Origine", "Brut", "TaxeProv", "ID Taxesejour",
-        "Base HT", "Taxe Séjour", "Total", "Statut",
+        "Checkin", "Checkout", "Nights", "Accommodation", "Client", "Adults", "Children",
+        "ChanMgrID", "Origin", "Gross", "Estimated Tax", "RegisterID",
+        "Excl.Tax", "Tourist Tax", "Total", "Status",
     ]
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")

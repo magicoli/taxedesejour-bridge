@@ -131,25 +131,25 @@ def beds24_note_value(rec: DeclarationRecord, row: "Any | None" = None) -> str:
     total = total_ttc(rec.declared_amount_ht, rec.declared_adults, rec.declared_children)
 
     lines = [
-        f"Début: {rec.check_in}",
-        f"Fin: {rec.check_out}",
+        f"Checkin: {rec.check_in}",
+        f"Checkout: {rec.check_out}",
     ]
     if row is not None:
         lines.append(f"Nuits: {row.nights}")
-        lines.append(f"Gîte(s): {row.units}")
+        lines.append(f"Accommodation: {row.units}")
         lines.append(f"Client: {row.client}")
     lines += [
-        f"Adultes: {rec.declared_adults} | Enfants: {rec.declared_children}",
-        f"ID Beds24: {rec.book_id}",
+        f"Adults: {rec.declared_adults} | Children: {rec.declared_children}",
+        f"ChanMgrID: {rec.book_id}",
     ]
     if row is not None:
-        lines.append(f"Origine: {row.origine}")
+        lines.append(f"Origin: {row.origine}")
         lines.append(f"TTC B24: {row.ttc_b24:.2f}€"
                      + (f" | Taxe B24: {row.taxe_b24:.2f}€" if row.taxe_b24 else ""))
     if rec.ts_stay_id:
         lines.append(f"ID Taxesejour: {rec.ts_stay_id}")
     lines += [
-        f"Base HT: {rec.declared_amount_ht:.2f}€",
+        f"Net: {rec.declared_amount_ht:.2f}€",
         f"Taxe séjour: {taxe:.2f}€",
         f"Total: {total:.2f}€",
         f"Statut: déclaré le {rec.declared_at[:10]}",
