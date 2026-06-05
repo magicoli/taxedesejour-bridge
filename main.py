@@ -19,10 +19,20 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-import state as st
-from beds24 import Booking, BookingGroup, get_bookings, group_bookings, set_booking_custom1
-from config import BEDS24_BOOKING_URL, VALID_STATUSES
-from taxesejour import TaxeSejourClient
+try:
+    import state as st
+    from beds24 import Booking, BookingGroup, get_bookings, group_bookings, set_booking_custom1
+    from config import BEDS24_BOOKING_URL, ConfigError, VALID_STATUSES
+    from taxesejour import TaxeSejourClient, TaxeSejourError
+except Exception as _import_error:
+    # ConfigError is not yet available if config.toml is missing at import time,
+    # so we catch broadly and print a clean message before exiting.
+    _msg = str(_import_error)
+    if "config.toml" in _msg or "Configuration file" in _msg or "Missing" in _msg:
+        print(f"Error: {_msg}", file=sys.stderr)
+    else:
+        print(f"Startup error: {_msg}", file=sys.stderr)
+    sys.exit(1)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -525,4 +535,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ConfigError, TaxeSejourError) as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)

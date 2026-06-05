@@ -21,6 +21,10 @@ from config import (
 )
 
 
+class TaxeSejourError(Exception):
+    """Raised for taxesejour.fr connectivity or authentication failures."""
+
+
 # ── Data types ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -102,13 +106,26 @@ class TaxeSejourClient:
         self._logged_in = False
 
     def login(self) -> None:
-        r = self._session.get(f"{TS_URL}/dashboard", allow_redirects=True)
+        try:
+            r = self._session.get(f"{TS_URL}/dashboard", allow_redirects=True, timeout=30)
+        except requests.exceptions.ConnectionError:
+            raise TaxeSejourError(
+                f"Cannot reach taxesejour.fr — check your internet connection."
+            )
+        except requests.exceptions.Timeout:
+            raise TaxeSejourError("taxesejour.fr timed out — try again later.")
         form = _parse_first_form(r.text)
-        self._session.post(
+        r2 = self._session.post(
             form["action"],
             data={"username": TS_USERNAME, "password": TS_PASSWORD, "login": "Se connecter"},
             allow_redirects=True,
+            timeout=30,
         )
+        # A successful login redirects to /dashboard; an auth failure re-shows the login form.
+        if "login" in r2.url and "dashboard" not in r2.url:
+            raise TaxeSejourError(
+                "taxesejour.fr login failed — check username and password in config.toml."
+            )
         self._logged_in = True
 
     def _ensure_logged_in(self):

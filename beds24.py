@@ -13,6 +13,7 @@ from config import (
     BEDS24_API_KEY,
     BEDS24_API_URL,
     BEDS24_PROP_KEY,
+    ConfigError,  # re-exported so callers can catch it
     BEDS24_ROOMS,
     PLATFORM_SOURCES,
     VALID_STATUSES,
@@ -155,12 +156,26 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
         "limit": 1000,
     }
 
-    resp = requests.post(BEDS24_API_URL + "getBookings", json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = requests.post(BEDS24_API_URL + "getBookings", json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Cannot reach Beds24 API — check your internet connection.")
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Beds24 API timed out — try again later.")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Beds24 API request failed: {e}")
 
     if isinstance(data, dict) and data.get("error"):
-        raise RuntimeError(f"Beds24 API error: {data['error']} (code {data.get('errorCode')})")
+        code = data.get("errorCode", "")
+        msg  = data.get("error", "")
+        if code in ("2000", "2001"):
+            raise ConfigError(
+                f"Beds24 authentication failed (code {code}): {msg}\n"
+                "Check api_key and prop_key in config.toml."
+            )
+        raise RuntimeError(f"Beds24 API error {code}: {msg}")
 
     return data if isinstance(data, list) else []
 

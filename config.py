@@ -5,6 +5,11 @@ from pathlib import Path
 
 CONFIG_FILE = Path(__file__).parent / "config.toml"
 
+
+class ConfigError(Exception):
+    """Raised when config.toml is missing or incomplete."""
+
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -12,30 +17,54 @@ else:
 
 
 def _load() -> dict:
-    with open(CONFIG_FILE, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(CONFIG_FILE, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        raise ConfigError(
+            f"Configuration file not found: {CONFIG_FILE.name}\n"
+            f"Copy {CONFIG_FILE.name}.example to {CONFIG_FILE.name} "
+            "and fill in your credentials."
+        )
+    except Exception as e:
+        raise ConfigError(f"Cannot read {CONFIG_FILE.name}: {e}")
+
+
+def _require(section: dict, key: str, path: str) -> str:
+    """Return cfg[key] or raise ConfigError with a helpful message."""
+    value = section.get(key)
+    if not value:
+        raise ConfigError(
+            f"Missing or empty key '{key}' in [{path}] section of {CONFIG_FILE.name}"
+        )
+    return value
 
 
 _cfg = _load()
 
 # ── taxesejour.fr ─────────────────────────────────────────────────────────────
-TAXESEJOUR = _cfg["nordbasseterre"]["taxesejour"]["fr"]
+try:
+    _ts = _cfg["nordbasseterre"]["taxesejour"]["fr"]
+except KeyError:
+    raise ConfigError(
+        f"Missing [nordbasseterre.taxesejour.fr] section in {CONFIG_FILE.name}"
+    )
+
 TS_URL         = "https://nordbasseterre.taxesejour.fr"
-TS_USERNAME    = TAXESEJOUR["username"]
-TS_PASSWORD    = TAXESEJOUR["password"]
+TS_USERNAME    = _require(_ts, "username", "nordbasseterre.taxesejour.fr")
+TS_PASSWORD    = _require(_ts, "password", "nordbasseterre.taxesejour.fr")
 TS_HOST_ID     = 1695931
 TS_LODGING_ID  = 2216111
 TS_REGISTRE_ID = 1248441  # unique registre for "Gîtes Mosaïques"
 
 # ── Beds24 ────────────────────────────────────────────────────────────────────
-# [beds24.canbt] key (needs proper IP whitelisting in Beds24 settings).
 BEDS24_API_URL = "https://api.beds24.com/json/"
 
 _b24_canbt = _cfg.get("beds24", {}).get("canbt", {})
 
-BEDS24_API_KEY  = _b24_canbt.get("api_key")
+BEDS24_API_KEY  = _require(_b24_canbt, "api_key",  "beds24.canbt")
 # propKey identifies the property; required by every Beds24 v1 call.
-BEDS24_PROP_KEY = _b24_canbt.get("prop_key")
+BEDS24_PROP_KEY = _require(_b24_canbt, "prop_key", "beds24.canbt")
 
 # Beds24 booking URL (for direct links in reports)
 BEDS24_BOOKING_URL = "https://beds24.com/control2.php?ajax=bookedit&id={book_id}"
