@@ -40,7 +40,7 @@ BEDS24_API_KEY  = _b24_canbt.get("api_key") or _b24_mosaiques["api_key"]
 BEDS24_PROP_KEY = _b24_mosaiques["prop_key"]
 
 # Beds24 booking URL (for direct links in reports)
-BEDS24_BOOKING_URL = "https://beds24.com/control3.php?pagetype=bookings&bookid={book_id}"
+BEDS24_BOOKING_URL = "https://beds24.com/control2.php?ajax=bookedit&id={book_id}"
 
 # Room IDs → gîte name
 BEDS24_ROOMS: dict[int, str] = {
