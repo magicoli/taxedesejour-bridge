@@ -19,7 +19,6 @@ but should be adaptable for other use cases.
 ## Requirements
 
 - Python 3.11+
-- `run.sh` creates the virtualenv and runs `pip install -r requirements.txt` automatically on first run — no manual pip step needed.
 
 ## Setup
 
@@ -29,7 +28,7 @@ cp config.toml.example config.toml
 ./run.sh --dry-run
 ```
 
-`run.sh` handles the virtualenv automatically on every run.
+Note: `run.sh` creates the virtualenv and runs `pip install -r requirements.txt` automatically on first run — no manual pip step needed -- and activates virtualenv automatically on every run.
 
 ### config.toml
 
@@ -54,6 +53,16 @@ prop_key = "..."
 ./run.sh --dry-run              # report only, no submissions
 ./run.sh --dry-run --month 2026-05
 ./run.sh --no-beds24-note       # skip writing to Beds24 custom1 field
+```
+
+Only pending declarations are considered. Submissions are not final and
+can be reviewed and modified on the register site until the final monthly
+submission is done manually, so it is safe to run the script regularly
+without `--dry-run`.
+
+```crontab
+# Example: run at 8am on the 5th of each month
+0 8 5 * * /path/to/run.sh
 ```
 
 ## Row statuses
