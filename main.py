@@ -147,26 +147,30 @@ def _build_row(
             warn = (f"montant modifié depuis déclaration: {old_ht:.2f}→{new_ht:.2f}€ HT "
                     f"(Δ {diff:+.2f}€) | {BEDS24_BOOKING_URL.format(book_id=bid)}")
             action_warnings.append(warn)
-        # Site declaration exists but its taxe ≠ what we compute → must review
-        # (manual entry differs, or amount changed since). Not a clean "ok".
+        # taxesejour.fr has a different taxe than computed → informational (needs update).
+        # Not an error: this is normal workflow, handled by --fill when implemented.
         if on_site and g.has_occupants and abs((site_taxe or 0) - g.computed_taxe) > 0.005:
-            action_warnings.append(
-                f"taxe site {site_taxe:.2f}€ ≠ calculée {g.computed_taxe:.2f}€ "
-                f"(Δ {g.computed_taxe - (site_taxe or 0):+.2f}€) — vérifier déclaration ts#{site_id}"
+            info_warnings.append(
+                f"taxe déclarée sur taxesejour.fr {site_taxe:.2f}€ ≠ calculée {g.computed_taxe:.2f}€ "
+                f"(Δ {g.computed_taxe - (site_taxe or 0):+.2f}€) — déclaration ts#{site_id} à mettre à jour"
             )
-        # Beds24 provisional taxe ≠ what we compute (informational)
+        # Beds24 provisional taxe ≠ what we compute (notification — known issue with
+        # Beds24 estimates; does not affect the declared total, just the invoice label).
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff = g.computed_taxe - g.taxe_in_invoice
-            warn = (f"taxe encaissée {g.taxe_in_invoice:.2f}€ ≠ déclarée "
+            warn = (f"taxe B24 provisoire {g.taxe_in_invoice:.2f}€ ≠ calculée "
                     f"{g.computed_taxe:.2f}€ (Δ {diff:+.2f}€)")
-            for bid in book_ids_list:
-                warn += f" | {BEDS24_BOOKING_URL.format(book_id=bid)}"
+            # Only link the booking(s) where the invoice taxe is actually set.
+            for b in g.bookings:
+                if b.taxe_in_invoice > 0:
+                    warn += f" | {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
             info_warnings.append(warn)
     warnings = action_warnings + info_warnings
 
     # taxesejour ID: prefer the live site match, fall back to local state
     id_ts = site_id or id_ts
-    # site taxe mismatch → distinct status
+    # Whether the taxesejour.fr declaration has a different taxe than computed.
+    # Informational only — drives status "upd" (needs update), not an error.
     site_taxe_mismatch = (
         on_site and g.has_occupants and abs((site_taxe or 0) - g.computed_taxe) > 0.005
     )
@@ -186,9 +190,9 @@ def _build_row(
     elif not g.has_amount:
         statut = "n/a"
     elif on_site and site_taxe_mismatch:
-        statut = "diff !"          # on site but amount differs — review
+        statut = f"upd{suffix}"    # on site but taxe differs — needs update (informational)
     elif on_site:
-        statut = "ok"             # on site and matches
+        statut = f"ok{suffix}"    # on site and matches
     elif all_tracked and amount_changes:
         statut = "update !"
     elif all_tracked:
