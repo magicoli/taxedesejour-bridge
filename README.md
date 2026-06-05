@@ -1,4 +1,4 @@
-# Beds24 - Taxedesejour.fr Bridge
+# Beds24 - TaxeSejour.fr Bridge
 
 Reconciles direct Beds24 bookings with tourist tax declarations on
 [nordbasseterre.taxesejour.fr](https://nordbasseterre.taxesejour.fr).
@@ -13,7 +13,7 @@ site which provides no documented API, making it difficult to automate
 and verify declarations based on actual booking status.
 
 This project was made to fix a precise use case (bookings managed in
-Beds24, declaration for one of the territories covered by taxedesejour.fr)
+Beds24, declaration for one of the territories covered by taxesejour.fr)
 but should be adaptable for other use cases.
 
 ## Requirements
@@ -117,4 +117,4 @@ taxe       = taxe_nuit × nights × adults          # children exempt
 
 ## Contributing
 
-Bug reports and suggestions welcome via [GitHub Issues](https://github.com/magicoli/taxedesejour-bridge/issues).
+Bug reports and suggestions welcome via [GitHub Issues](https://github.com/magicoli/taxesejour-bridge/issues).

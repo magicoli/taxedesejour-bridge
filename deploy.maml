@@ -2,7 +2,7 @@
   import: ["recipe/common.php"]
 
   config: {
-    repository: "git@github.com:magicoli/taxedesejour-bridge.git",
+    repository: "git@github.com:magicoli/taxesejour-bridge.git",
     keep_releases: 3,
     shared_files: ["config.toml"],
     shared_dirs: [".venv", "data"]
@@ -11,7 +11,7 @@
   hosts: {
     "bokit.click": {
       remote_user: "magic"
-      deploy_path: "/opt/taxedesejour-bridge"
+      deploy_path: "/opt/taxesejour-bridge"
       branch: "master"
     }
   }
