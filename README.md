@@ -16,6 +16,11 @@ This project was made to fix a precise use case (bookings managed in
 Beds24, declaration for one of the territories covered by taxedesejour.fr)
 but should be adaptable for other use cases.
 
+## Requirements
+
+- Python 3.11+
+- `run.sh` creates the virtualenv and runs `pip install -r requirements.txt` automatically on first run — no manual pip step needed.
+
 ## Setup
 
 ```bash
@@ -24,7 +29,7 @@ cp config.toml.example config.toml
 ./run.sh --dry-run
 ```
 
-`run.sh` creates the virtualenv and installs dependencies on first run.
+`run.sh` handles the virtualenv automatically on every run.
 
 ### config.toml
 
