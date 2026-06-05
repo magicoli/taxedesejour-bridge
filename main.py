@@ -315,12 +315,12 @@ def process_month(
 
 # ── Per-run output (ONLY warnings/errors, one line each) ──────────────────────
 
-def print_run_warnings(month_label: str, rows: list[Row], year: int, month: int) -> None:
-    """Print month header and informational notifications (before the table).
+def print_run_warnings(rows: list[Row]) -> None:
+    """Print informational notifications before the table.
 
-    Error summaries and -> detail lines are printed AFTER the table by print_recap.
+    The month header is printed in main() before fetching starts.
+    Error summaries and -> detail lines are printed after the table by print_recap.
     """
-    print(f"\n-- {month_label}")
     for row in rows:
         if not row.notifications:
             continue
@@ -517,10 +517,10 @@ def main() -> None:
 
     for y, m, pid in months:
         month_label = date(y, m, 1).strftime("%B %Y")
-        print(f"[{month_label}] fetching bookings and declarations ...", flush=True)
+        print(f"\n-- {month_label}", flush=True)
         month_rows = process_month(y, m, pid, client, records,
                                    fill=fill, write_beds24_note=write_note)
-        print_run_warnings(month_label, month_rows, y, m)
+        print_run_warnings(month_rows)
         print_recap(month_rows, y, m)
 
 
