@@ -1,0 +1,30 @@
+{
+  import: ["recipe/common.php"]
+
+  config: {
+    repository: "git@github.com:magicoli/taxedesejour-bridge.git",
+    keep_releases: 3,
+    shared_files: ["config.toml"],
+    shared_dirs: [".venv", "data"]
+  }
+
+  hosts: {
+    "bokit.click": {
+      remote_user: "magic"
+      deploy_path: "/opt/taxedesejour-bridge"
+      branch: "master"
+    }
+  }
+
+  tasks: {
+    "deploy:venv": [
+      { desc: "Create virtualenv and install dependencies" }
+      { run: "python3 -m venv {{release_path}}/.venv && source {{release_path}}/.venv/bin/activate && pip install --quiet -r {{release_path}}/requirements.txt" }
+    ]
+  }
+
+  after: {
+    "deploy:shared": "deploy:venv"
+    "deploy:failed": "deploy:unlock"
+  }
+}
