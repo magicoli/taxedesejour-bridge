@@ -19,7 +19,8 @@
   tasks: {
     "deploy:venv": [
       { desc: "Create virtualenv and install dependencies" }
-      { run: "python3 -m venv {{release_path}}/.venv && source {{release_path}}/.venv/bin/activate && pip install --quiet -r {{release_path}}/requirements.txt" }
+      { run: "[ -f {{deploy_path}}/shared/.venv/bin/activate ] || python3 -m venv {{deploy_path}}/shared/.venv" }
+      { run: "{{deploy_path}}/shared/.venv/bin/pip install --quiet -r {{release_path}}/requirements.txt" }
     ]
   }
 
