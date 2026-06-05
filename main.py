@@ -450,9 +450,9 @@ def _action_line(rows: list[Row], year: int, month: int) -> str:
     to_update = counts["update"]
     if to_add + to_update > 0:
         parts = []
-        if to_add:    parts.append(f"{to_add} to add")
-        if to_update: parts.append(f"{to_update} to update")
-        return f"{prefix}: {', '.join(parts)} -- run to submit"
+        if to_add:    parts.append(f"{to_add} stay(s) to add")
+        if to_update: parts.append(f"{to_update} stay(s) to update")
+        return f"{prefix}: {', '.join(parts)}; execute without --dry-run to proceed"
 
     n_ready = counts["ready"] + counts["added"] + counts["updated"]
     if n_ready > 0:
