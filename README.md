@@ -114,3 +114,7 @@ taxe       = taxe_nuit × nights × adults          # children exempt
 
 `net_ht` is derived from the total received (TTC) by inverting:
 `total = net_ht × (1 + VAT_2.1% + 5% × adults/guests)`.
+
+## Contributing
+
+Bug reports and suggestions welcome via [GitHub Issues](https://github.com/magicoli/taxedesejour-bridge/issues).
