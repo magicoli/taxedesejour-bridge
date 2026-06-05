@@ -59,9 +59,15 @@ class Row:
     base_ht: Optional[float]    # None for platforms and n/a
     taxe_sejour: Optional[float]  # base_ht * 5%
     total: Optional[float]      # base_ht * 1.071 (= HT + TVA 2.1% + taxe 5%)
-    statut: str             # "add" / "add !" / "ok" / "ok !" / "update !" / "n/a" / "—"
-    warnings: list[str] = field(default_factory=list)
+    statut: str             # "add" / "ready" / "update" / "error" / "failed" / "n/a" / "-"
+    errors: list[str] = field(default_factory=list)        # action-required messages
+    error_details: list[str] = field(default_factory=list) # -> sub-lines shown under errors
+    notifications: list[str] = field(default_factory=list) # informational messages
     book_ids_for_links: list[str] = field(default_factory=list)
+
+    @property
+    def warnings(self) -> list[str]:
+        return self.errors + self.notifications
 
     @property
     def delta(self) -> Optional[float]:
@@ -113,10 +119,11 @@ def _build_row(
             if rec and rec.amount_changed(b.declared_amount):
                 amount_changes.append((b.book_id, rec.declared_amount_ht, b.declared_amount))
 
-    # errors:        Beds24 data problems that must be fixed before any fill can run.
-    # notifications: informational issues (known mismatches, amounts changed);
-    #                shown before the table, do not block submission.
+    # errors:         Beds24 data problems that must be fixed before any fill can run.
+    # error_details:  one line per affected booking for the -> display.
+    # notifications:  informational issues shown before the table, do not block submission.
     errors:        list[str] = []
+    error_details: list[str] = []
     notifications: list[str] = []
     if not is_plat:
         # Group sub-bookings with invalid status are a Beds24 encoding error.
@@ -127,19 +134,26 @@ def _build_row(
                 b.total_received for b in g.bookings if b.status in VALID_STATUSES
             )
             full_total = g.total_received
-            warn = (
+            errors.append(
                 f"{len(invalid_subs)} linked booking(s) with invalid Beds24 status "
                 f"(confirmed={confirmed_total:.2f}, group={full_total:.2f}, "
                 f"diff={full_total - confirmed_total:.2f}) -- fix status in Beds24"
             )
             for b in invalid_subs:
-                warn += f" -- {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
-            errors.append(warn)
+                detail = (f"{b.check_in.strftime('%d/%m/%y')} {b.check_out.strftime('%d/%m/%y')}"
+                          f" {b.unit}")
+                guest = b.guest.strip()
+                if guest and guest != "—":
+                    detail += f" {guest}"
+                detail += f" {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
+                error_details.append(detail)
         if g.has_amount and not g.has_occupants:
-            warn = "missing occupants -- fix in Beds24"
-            for bid in book_ids_list:
-                warn += f" -- {BEDS24_BOOKING_URL.format(book_id=bid)}"
-            errors.append(warn)
+            errors.append("missing occupants -- fix in Beds24")
+            for b in g.bookings:
+                error_details.append(
+                    f"{b.check_in.strftime('%d/%m/%y')} {b.check_out.strftime('%d/%m/%y')}"
+                    f" {b.unit} {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
+                )
         # Amount changed since last declaration: needs updating (informational).
         for bid, old_ht, new_ht in amount_changes:
             diff = new_ht - old_ht
@@ -148,7 +162,6 @@ def _build_row(
                 f"(diff {diff:.2f}) -- {BEDS24_BOOKING_URL.format(book_id=bid)}"
             )
         # computed != registered: the taxesejour.fr declaration has a different taxe.
-        # Normal workflow -- will be resolved by --fill when update is implemented.
         if on_site and g.has_occupants and abs((site_taxe or 0) - g.computed_taxe) > 0.005:
             diff_ts = (site_taxe or 0) - g.computed_taxe
             notifications.append(
@@ -156,7 +169,6 @@ def _build_row(
                 f"(diff {diff_ts:.2f}) -- declaration ts#{site_id} needs update"
             )
         # estimated != computed: Beds24 provisional taxe differs from our formula.
-        # Known issue; does not affect the declared total, just the invoice label.
         if g.taxe_in_invoice > 0 and abs(g.computed_taxe - g.taxe_in_invoice) > 0:
             diff_b24 = g.computed_taxe - g.taxe_in_invoice
             warn = (
@@ -167,7 +179,6 @@ def _build_row(
                 if b.taxe_in_invoice > 0:
                     warn += f" -- {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
             notifications.append(warn)
-    warnings = errors + notifications
 
     # taxesejour ID: prefer the live site match, fall back to local state
     id_ts = site_id or id_ts
@@ -183,7 +194,7 @@ def _build_row(
         taxe_sej = g.computed_taxe
         total    = g.total_received
 
-    # Status values: error > update > ok > add > n/a > -
+    # Status values: error > update > ready > add > n/a > -
     if is_plat:
         statut = "-"
     elif not g.has_amount:
@@ -193,11 +204,11 @@ def _build_row(
     elif on_site and site_taxe_mismatch:
         statut = "update"          # on site but taxe differs
     elif on_site:
-        statut = "ok"
+        statut = "ready"           # declared and confirmed -- ready to close month
     elif all_tracked and amount_changes:
         statut = "update"          # amount changed since declaration
     elif all_tracked:
-        statut = "ok"
+        statut = "ready"
     else:
         statut = "add"
 
@@ -211,14 +222,16 @@ def _build_row(
         children           = g.children,
         ids_b24            = ids_b24,
         origine            = source,
-        ttc_b24            = g.total_received,      # Brut = total reçu du client
-        taxe_b24           = g.taxe_in_invoice,     # dont Est. Tax provisoire encaissée
+        ttc_b24            = g.total_received,
+        taxe_b24           = g.taxe_in_invoice,
         id_ts              = id_ts,
         base_ht            = base_ht,
         taxe_sejour        = taxe_sej,
         total              = total,
         statut             = statut,
-        warnings           = warnings,
+        errors             = errors,
+        error_details      = error_details,
+        notifications      = notifications,
         book_ids_for_links = book_ids_list,
     )
 
@@ -289,7 +302,11 @@ def process_month(
                             rec.beds24_noted = True
             except Exception as e:
                 row.statut = "failed"
-                row.warnings.append(f"submission failed: {e}")
+                row.errors.append(f"submission failed: {e}")
+                row.error_details.append(
+                    f"{row.check_in.strftime('%d/%m/%y')} {row.check_out.strftime('%d/%m/%y')}"
+                    f" {row.units} -- {e}"
+                )
 
         st.save(records)
 
@@ -298,15 +315,29 @@ def process_month(
 
 # ── Per-run output (ONLY warnings/errors, one line each) ──────────────────────
 
-def print_run_warnings(month_label: str, rows: list[Row]) -> None:
-    issues = [r for r in rows if r.warnings]
-    if not issues:
-        return
-    print(f"\n-- {month_label}")
-    for row in issues:
-        prefix = f"{row.check_in.strftime('%d/%m/%y')}->{row.check_out.strftime('%d/%m/%y')} [{row.units}]"
-        for w in row.warnings:
-            print(f"{prefix}  {w}")
+def print_run_warnings(month_label: str, rows: list[Row], year: int, month: int) -> None:
+    month_key = f"{year}-{month:02d}"
+    error_rows  = [r for r in rows if r.errors]
+    notif_rows  = [r for r in rows if r.notifications]
+
+    if error_rows:
+        n_err    = sum(1 for r in error_rows if r.statut == "error")
+        n_failed = sum(1 for r in error_rows if r.statut == "failed")
+        parts = []
+        if n_err:    parts.append(f"{n_err} error(s)")
+        if n_failed: parts.append(f"{n_failed} failed")
+        print(f"\n{month_key}: {', '.join(parts)} -- fix in source before running")
+        for row in error_rows:
+            for detail in row.error_details:
+                print(f"-> {detail}")
+
+    if notif_rows:
+        print(f"\n-- {month_key}")
+        for row in notif_rows:
+            prefix = (f"{row.check_in.strftime('%d/%m/%y')}->"
+                      f"{row.check_out.strftime('%d/%m/%y')} [{row.units}]")
+            for n in row.notifications:
+                print(f"{prefix}  {n}")
 
 
 # ── Recap table ───────────────────────────────────────────────────────────────
@@ -402,28 +433,28 @@ def _write_csv(rows: list[Row], acc: dict, csv_path: str) -> None:
         )
 
 
-def _action_line(rows: list[Row]) -> str:
-    """Return the recommended next action based on the statuses in the recap.
+def _action_line(rows: list[Row], year: int, month: int) -> str:
+    """Return the recommended next action for the given month.
 
     Status hierarchy (in priority order):
-      error   -- Beds24 data problems that must be fixed before --fill
-      add     -- not yet declared; --fill will submit them (-> added)
-      update  -- declared but taxe differs; --fill will update them (-> updated)
-      added   -- just submitted by --fill; verify on site and close the month
-      updated -- just updated by --fill; same
-      ok      -- declared correctly; close the month when all are ok
+      error   -- Beds24 data problems that must be fixed before running
+      failed  -- submission error during this run
+      add     -- not yet declared; will be submitted on next run
+      update  -- declared but taxe differs; will be updated on next run
+      added   -- just submitted; verify on site and close the month
+      updated -- just updated; same
+      ready   -- declared correctly; close the month when all are ready
       n/a/-   -- no declaration needed (free stays / platform bookings)
     """
     from collections import Counter
-    counts = Counter(r.statut for r in rows)
+    counts  = Counter(r.statut for r in rows)
+    prefix  = f"{year}-{month:02d}"
 
-    if counts["error"] > 0:
-        n = counts["error"]
-        return f"{n} error(s) -- fix in Beds24 before running --fill"
-
-    if counts["failed"] > 0:
-        n = counts["failed"]
-        return f"{n} submission(s) failed -- investigate errors above before retrying --fill"
+    if counts["error"] > 0 or counts["failed"] > 0:
+        parts = []
+        if counts["error"]:  parts.append(f"{counts['error']} error(s)")
+        if counts["failed"]: parts.append(f"{counts['failed']} failed")
+        return f"{prefix}: {', '.join(parts)} -- fix in source before running"
 
     to_add    = counts["add"]
     to_update = counts["update"]
@@ -431,24 +462,21 @@ def _action_line(rows: list[Row]) -> str:
         parts = []
         if to_add:    parts.append(f"{to_add} to add")
         if to_update: parts.append(f"{to_update} to update")
-        return ", ".join(parts) + " -- run --fill"
+        return f"{prefix}: {', '.join(parts)} -- run to submit"
 
-    just_done = counts["added"] + counts["updated"]
-    if just_done > 0:
-        return "declarations submitted -- verify on taxesejour.fr and submit the month"
-
-    if counts["ok"] > 0:
-        return "all declarations up to date -- submit the month on taxesejour.fr"
+    n_ready = counts["ready"] + counts["added"] + counts["updated"]
+    if n_ready > 0:
+        return f"{prefix}: {n_ready} declaration(s) ready to submit on taxesejour.fr"
 
     # Only n/a and platform entries -- nothing declarable
-    return "no declarations for this month -- submit an empty declaration on taxesejour.fr"
+    return f"{prefix}: no declarations for this month -- submit an empty declaration on taxesejour.fr"
 
 
 def print_recap(rows: list[Row], year: int, month: int) -> None:
     rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
     acc  = _totals(rows)
     _render_terminal(rows, acc)
-    print(f"\n-> {_action_line(rows)}")
+    print(f"\n-> {_action_line(rows, year, month)}")
     _write_csv(rows, acc, _csv_path(year, month))
 
 
@@ -495,7 +523,7 @@ def main() -> None:
         month_rows = process_month(y, m, pid, client, records,
                                    fill=fill, write_beds24_note=write_note)
         month_label = date(y, m, 1).strftime("%B %Y")
-        print_run_warnings(month_label, month_rows)
+        print_run_warnings(month_label, month_rows, y, m)
         print_recap(month_rows, y, m)
 
 
