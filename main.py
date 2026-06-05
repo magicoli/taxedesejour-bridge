@@ -242,22 +242,34 @@ def process_month(
 
     if fill:
         for row, g in zip(rows, all_groups):
-            # Only submit groups that are genuinely missing ("add").
-            # "error" and "update" are skipped (must fix Beds24 first, or
-            # update functionality not yet implemented).
-            if row.statut != "add" or row.base_ht is None:
+            # "error": Beds24 data problem — skip, must fix first.
+            # "add" / "failed": new declaration or retry after failure → add_stay.
+            # "update": declaration exists but taxe differs → update_stay in place.
+            if row.statut not in ("add", "failed", "update") or row.base_ht is None:
                 continue
             try:
-                ts_id = client.add_stay(
-                    month     = date(year, month, 1),
-                    period_id = period_id,
-                    check_in  = g.check_in,
-                    check_out = g.check_out,
-                    adults    = g.adults,
-                    children  = g.children,
-                    amount    = g.declared_amount,
-                )
-                row.statut = "added"
+                if row.statut == "update" and row.id_ts:
+                    ts_id = client.update_stay(
+                        stay_id   = row.id_ts,
+                        month     = date(year, month, 1),
+                        check_in  = g.check_in,
+                        check_out = g.check_out,
+                        adults    = g.adults,
+                        children  = g.children,
+                        amount    = g.declared_amount,
+                    )
+                    row.statut = "updated"
+                else:
+                    ts_id = client.add_stay(
+                        month     = date(year, month, 1),
+                        period_id = period_id,
+                        check_in  = g.check_in,
+                        check_out = g.check_out,
+                        adults    = g.adults,
+                        children  = g.children,
+                        amount    = g.declared_amount,
+                    )
+                    row.statut = "added"
                 row.id_ts  = ts_id
                 for b in g.bookings:
                     st.mark_declared(
@@ -276,7 +288,7 @@ def process_month(
                         if set_booking_custom1(b.book_id, st.beds24_note_value(rec, row)):
                             rec.beds24_noted = True
             except Exception as e:
-                row.statut = "error"
+                row.statut = "failed"
                 row.warnings.append(f"submission failed: {e}")
 
         st.save(records)
@@ -411,10 +423,12 @@ def _action_line(rows: list[Row]) -> str:
 
     to_add    = counts["add"]
     to_update = counts["update"]
-    if to_add + to_update > 0:
+    to_retry  = counts["failed"]
+    if to_add + to_update + to_retry > 0:
         parts = []
         if to_add:    parts.append(f"{to_add} to add")
         if to_update: parts.append(f"{to_update} to update")
+        if to_retry:  parts.append(f"{to_retry} to retry")
         return ", ".join(parts) + " -- run --fill"
 
     just_done = counts["added"] + counts["updated"]

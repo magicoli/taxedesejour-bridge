@@ -247,32 +247,27 @@ class TaxeSejourClient:
 
     # ── Writing ────────────────────────────────────────────────────────────────
 
-    def add_stay(
+    def _submit_stay_form(
         self,
-        month: date,
-        period_id: str,
+        base: str,
+        month_str: str,
         check_in: date,
         check_out: date,
         adults: int,
         children: int,
         amount: float,
-    ) -> str:
-        """Submit a new stay declaration (3-step form).
+    ) -> None:
+        """Execute the 3-step stay form (shared by add and update).
 
-        Returns the taxesejour.fr stay ID assigned to the new declaration,
-        or "" if it could not be captured (submission still happened).
-        Raises on HTTP or validation error.
+        `base` is the URL prefix for the form, e.g.:
+          - /v2/host/stay/new/{registre_id}       (add)
+          - /v2/host/stay/edit/{registre_id}/{id}  (update)
+        Raises on HTTP error or if a CSRF token cannot be extracted.
         """
-        month_str = f"{month.year}-{month.month:02d}-01"
-        base = f"/v2/host/stay/new/{TS_REGISTRE_ID}"
-
-        self._ensure_logged_in()
-
-        # Snapshot stay IDs before submission so we can diff after
-        ids_before = self.get_stay_ids(month.year, month.month, period_id)
-
         # ── Step 1: dates ──────────────────────────────────────────────────────
-        r1 = self._session.get(f"{TS_URL}{base}?month={month_str}")
+        r1 = self._session.get(f"{TS_URL}{base}?month={month_str}",
+                               headers={"Turbo-Frame": "stay-form-frame"})
+        r1.raise_for_status()
         csrf1 = _extract_csrf(r1.text)
         if not csrf1:
             raise RuntimeError("Could not extract CSRF token from step 1")
@@ -294,7 +289,6 @@ class TaxeSejourClient:
             raise RuntimeError("Could not extract CSRF token from step 2")
 
         # ── Step 2: occupants ──────────────────────────────────────────────────
-        total = adults + children
         r3 = self._session.post(
             f"{TS_URL}{base}?host={TS_HOST_ID}&step=2",
             data={
@@ -304,7 +298,7 @@ class TaxeSejourClient:
                 "stay[countUrgency]":          0,
                 "stay[countLowRent]":          0,
                 "stay[countPersonNonTaxable]": 0,
-                "stay[countPerson]":           total,
+                "stay[countPerson]":           adults + children,
                 "stay[_token]":                csrf2,
             },
             headers={"Turbo-Frame": "stay-form-frame"},
@@ -316,11 +310,10 @@ class TaxeSejourClient:
 
         # ── Step 3: amount ─────────────────────────────────────────────────────
         # French site: decimal separator must be a comma.
-        amount_fr = f"{amount:.2f}".replace(".", ",")
         r4 = self._session.post(
             f"{TS_URL}{base}?host={TS_HOST_ID}&step=3",
             data={
-                "stay[amount]":       amount_fr,
+                "stay[amount]":       f"{amount:.2f}".replace(".", ","),
                 "stay[nightPrice]":   "",
                 "stay[isNightPrice]": "",
                 "stay[_token]":       csrf3,
@@ -328,12 +321,68 @@ class TaxeSejourClient:
             headers={"Turbo-Frame": "stay-form-frame"},
         )
         r4.raise_for_status()
-
-        # Success check
         if "erreur" in r4.text.lower() or "error" in r4.text.lower():
             raise RuntimeError(f"Server returned an error on step 3: {r4.text[:300]}")
 
-        # Capture the new stay ID by diffing before/after
+    def add_stay(
+        self,
+        month: date,
+        period_id: str,
+        check_in: date,
+        check_out: date,
+        adults: int,
+        children: int,
+        amount: float,
+    ) -> str:
+        """Submit a new stay declaration (3-step form).
+
+        Returns the taxesejour.fr stay ID assigned to the new declaration,
+        or "" if it could not be captured (submission still happened).
+        Raises on HTTP or validation error.
+        """
+        self._ensure_logged_in()
+        month_str = f"{month.year}-{month.month:02d}-01"
+        ids_before = self.get_stay_ids(month.year, month.month, period_id)
+
+        self._submit_stay_form(
+            base      = f"/v2/host/stay/new/{TS_REGISTRE_ID}",
+            month_str = month_str,
+            check_in  = check_in,
+            check_out = check_out,
+            adults    = adults,
+            children  = children,
+            amount    = amount,
+        )
+
         ids_after = self.get_stay_ids(month.year, month.month, period_id)
-        new_ids = ids_after - ids_before
+        new_ids   = ids_after - ids_before
         return next(iter(new_ids), "")
+
+    def update_stay(
+        self,
+        stay_id: str,
+        month: date,
+        check_in: date,
+        check_out: date,
+        adults: int,
+        children: int,
+        amount: float,
+    ) -> str:
+        """Update an existing stay declaration in place (3-step edit form).
+
+        The stay keeps its existing ID on taxesejour.fr.
+        Returns the stay_id on success. Raises on HTTP or validation error.
+        """
+        self._ensure_logged_in()
+        month_str = f"{month.year}-{month.month:02d}-01"
+
+        self._submit_stay_form(
+            base      = f"/v2/host/stay/edit/{TS_REGISTRE_ID}/{stay_id}",
+            month_str = month_str,
+            check_in  = check_in,
+            check_out = check_out,
+            adults    = adults,
+            children  = children,
+            amount    = amount,
+        )
+        return stay_id
