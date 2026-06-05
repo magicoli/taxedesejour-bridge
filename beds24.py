@@ -50,6 +50,7 @@ class Booking:
     check_out: date
     adults: int
     children: int
+    status: str             # Beds24 status code ("1"=Confirmed, "2"=New, …)
     api_source: str
     guest: str
     guest_email: str        # for client matching when no group/masterId
@@ -109,15 +110,17 @@ class Booking:
 
 # ── Invoice parsing ────────────────────────────────────────────────────────────
 
-def _parse_invoice(raw: list[dict]) -> tuple[float, float, list[InvoiceLine]]:
-    """Return (acc_ttc, taxe_invoiced, lines).
+def _parse_invoice(raw: list[dict]) -> tuple[float, float, float, list[InvoiceLine]]:
+    """Return (acc_ttc, taxe_invoiced, payment_total, lines).
 
-    acc_ttc = sum of accommodation line amounts (type 0/1/8, excl. payments and taxe).
+    acc_ttc       = sum of accommodation line amounts (type 0/1/8, excl. payments and taxe).
     taxe_invoiced = sum of lines whose description contains 'taxe de séjour'.
+    payment_total = sum of payment lines (type 200) — what the client actually paid in total.
     """
     lines: list[InvoiceLine] = []
     acc_ttc = 0.0
     taxe_invoiced = 0.0
+    payment_total = 0.0
 
     for raw_line in raw:
         ltype = str(raw_line.get("type", ""))
@@ -126,7 +129,8 @@ def _parse_invoice(raw: list[dict]) -> tuple[float, float, list[InvoiceLine]]:
 
         lines.append(InvoiceLine(description=desc, price=price, line_type=ltype))
 
-        if ltype == "200":   # payment — ignore for amounts
+        if ltype == "200":
+            payment_total += price
             continue
 
         if "taxe de séjour" in desc.lower():
@@ -134,7 +138,7 @@ def _parse_invoice(raw: list[dict]) -> tuple[float, float, list[InvoiceLine]]:
         elif ltype in ("0", "1", "8"):
             acc_ttc += price
 
-    return acc_ttc, taxe_invoiced, lines
+    return acc_ttc, taxe_invoiced, payment_total, lines
 
 
 # ── API call ───────────────────────────────────────────────────────────────────
@@ -197,17 +201,47 @@ def get_bookings(year: int, month: int) -> list[Booking]:
     A stay is declared in the month where the prestation ends (checkout date).
     Fetches from 4 months prior to catch long cross-month stays.
     Includes platform bookings — callers decide what to do with them.
-    Blocks (status 4/5) and cancellations (status 3) are excluded.
+
+    Status handling (Beds24 admin UI codes):
+      0=Cancelled  1=Confirmed  2=New  3=Request  4=Black  5=Inquiry
+    - Normally only status 1 and 2 are processed.
+    - Exception: Beds24 group invoices use status 3 for sub-bookings
+      (placeholders). A sub-booking is included when its masterId points
+      to a confirmed (status 1/2) master that carries a 'group' field.
+
+    Amount fallback (when invoice acc_ttc ≤ 0):
+    - Group master with no invoice lines: acc_ttc = 0 (amounts live on subs).
+    - Standalone booking with invoice + large discount (negative acc_ttc):
+      use payment_total (type-200 lines) as total received if available.
+    - No invoice at all (and not a group master): fall back to price_field.
     """
     raw_list = _fetch_raw(year, month)
+
+    # ── Pass 1: identify group master booking IDs ─────────────────────────────
+    # A group master has a non-empty Beds24 'group' sub-dict AND masterId == own
+    # bookId (self-referential). Sub-bookings of a confirmed master are included
+    # even at status 3 (Request — the placeholder status Beds24 assigns them).
+    confirmed_masters: set[str] = set()
+    for row in raw_list:
+        if str(row.get("status") or "") not in VALID_STATUSES:
+            continue
+        book_id   = str(row.get("bookId") or "")
+        master_id = str(row.get("masterId") or "").strip()
+        if row.get("group") and master_id == book_id:
+            confirmed_masters.add(book_id)
+
+    # ── Pass 2: build Booking objects ─────────────────────────────────────────
     bookings: list[Booking] = []
 
     for row in raw_list:
-        # Keep only Confirmed (1) and New (2). All other statuses — Cancelled (0),
-        # Request (3), Black (4), Inquiry (5) — are ignored. (iCal is a valid
-        # source; the status, not the channel, decides.)
-        status = str(row.get("status") or "")
-        if status not in VALID_STATUSES:
+        status    = str(row.get("status") or "")
+        book_id_s = str(row.get("bookId") or "")
+        master_id = str(row.get("masterId") or "").strip()
+
+        # Include if valid status, OR if it's a sub-booking of a confirmed group.
+        is_group_sub = (status == "3" and master_id in confirmed_masters
+                        and master_id != book_id_s)
+        if status not in VALID_STATUSES and not is_group_sub:
             continue
 
         api_source = str(row.get("apiSource") or "0")
@@ -229,15 +263,38 @@ def get_bookings(year: int, month: int) -> list[Booking]:
         children = int(row.get("numChild") or 0)
 
         price_field = float(row.get("price") or 0)
-        acc_ttc, taxe_inv, inv_lines = _parse_invoice(row.get("invoice") or [])
+        acc_ttc, taxe_inv, payment_total, inv_lines = _parse_invoice(
+            row.get("invoice") or []
+        )
 
-        # Fall back to price_field when invoice total is absent or unreliable
-        # (e.g. large discount makes net negative, or no invoice lines)
-        if acc_ttc <= 0 and price_field > 0:
-            acc_ttc = price_field
+        # A group master has a self-referential masterId and carries sub-bookings.
+        # The real amounts live on sub-bookings; the master entry may be a header.
+        is_group_master = (
+            bool(row.get("group")) and master_id == book_id_s
+        )
 
-        # Name: guestFirstName/guestName hold the real name; firstName/lastName
-        # are often empty in the v1 API. Fall back across both.
+        # ── Amount fallback ────────────────────────────────────────────────────
+        if acc_ttc <= 0:
+            if not inv_lines:
+                # No invoice at all.
+                if is_group_master:
+                    # Master placeholder with no invoice: amounts are on subs.
+                    # Do NOT use price_field (would double-count sub amounts).
+                    acc_ttc = 0.0
+                elif price_field > 0:
+                    acc_ttc = price_field
+            else:
+                # Invoice exists but acc_ttc is negative (large discount, manual
+                # entry with partial rate line, etc.).
+                if not is_group_master and payment_total > 0:
+                    # For standalone bookings, the payment lines show what was
+                    # actually received (accommodation + taxe combined).
+                    acc_ttc  = payment_total
+                    taxe_inv = 0.0
+                elif price_field > 0:
+                    acc_ttc = price_field
+
+        # Name: guestFirstName/guestName hold the real name in v1 API.
         guest = (
             " ".join(p for p in (row.get("guestFirstName"), row.get("guestName")) if p).strip()
             or " ".join(p for p in (row.get("firstName"), row.get("lastName")) if p).strip()
@@ -245,24 +302,25 @@ def get_bookings(year: int, month: int) -> list[Booking]:
         )
 
         bookings.append(Booking(
-            book_id          = str(row.get("bookId", "")),
+            book_id          = book_id_s,
             unit             = unit,
             room_id          = room_id,
             check_in         = check_in,
             check_out        = check_out,
             adults           = adults,
             children         = children,
+            status           = status,
             api_source       = api_source,
             guest            = guest,
             guest_email      = str(row.get("guestEmail") or "").strip(),
-            master_id        = str(row.get("masterId") or "").strip(),
+            master_id        = master_id,
             price_field      = price_field,
             acc_amount_ttc   = acc_ttc,
             taxe_in_invoice  = taxe_inv,
             invoice_lines    = inv_lines,
         ))
 
-    # Keep only bookings whose checkout falls in the requested month
+    # Keep only bookings whose checkout falls in the requested month.
     bookings = [b for b in bookings
                 if b.check_out.year == year and b.check_out.month == month]
 

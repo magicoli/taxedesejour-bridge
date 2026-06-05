@@ -20,7 +20,7 @@ from typing import Optional
 
 import state as st
 from beds24 import Booking, BookingGroup, get_bookings, group_bookings, set_booking_custom1
-from config import BEDS24_BOOKING_URL
+from config import BEDS24_BOOKING_URL, VALID_STATUSES
 from taxesejour import TaxeSejourClient
 
 
@@ -119,6 +119,24 @@ def _build_row(
     action_warnings: list[str] = []
     info_warnings:   list[str] = []
     if not is_plat:
+        # Sub-bookings with invalid Beds24 status (e.g. Request instead of
+        # Confirmed) indicate a data-entry error. We still include them so the
+        # total is correct, but we flag the discrepancy so the user can fix
+        # Beds24 (and so the "add !" status prevents silent submission).
+        invalid_subs = [b for b in g.bookings if b.status not in VALID_STATUSES]
+        if invalid_subs:
+            confirmed_total = sum(
+                b.total_received for b in g.bookings if b.status in VALID_STATUSES
+            )
+            full_total = g.total_received
+            warn = (
+                f"{len(invalid_subs)} sous-résa liée(s) avec statut Beds24 invalide "
+                f"(confirmés={confirmed_total:.2f}€, groupe={full_total:.2f}€, "
+                f"Δ={full_total - confirmed_total:.2f}€) — corriger le statut dans Beds24"
+            )
+            for b in invalid_subs:
+                warn += f" | {BEDS24_BOOKING_URL.format(book_id=b.book_id)}"
+            action_warnings.append(warn)
         if g.has_amount and not g.has_occupants:
             warn = "occupants manquants — corriger dans Beds24"
             for bid in book_ids_list:
