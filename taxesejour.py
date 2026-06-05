@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
+from urllib.parse import quote
 
 import requests
 
@@ -309,20 +310,33 @@ class TaxeSejourClient:
             raise RuntimeError("Could not extract CSRF token from step 3")
 
         # ── Step 3: amount ─────────────────────────────────────────────────────
-        # French site: decimal separator must be a comma.
+        # Step 3 is a FINAL form submission that navigates to "Mes déclarations".
+        # The form targets data-turbo-frame="main-turbo-frame"; sending the wrong
+        # frame (stay-form-frame) makes the server think it's a partial update and
+        # return 422 with "montant = 0" regardless of the value sent.
+        #
+        # Square brackets must NOT be percent-encoded (browser behavior); values
+        # are encoded normally. The isNightPrice checkbox is omitted when unchecked
+        # (browsers do not send unchecked checkboxes).
+        amount_fr = f"{amount:.2f}".replace(".", ",")
+        body3 = (
+            f"stay[amount]={quote(amount_fr, safe='')}"
+            f"&stay[nightPrice]="
+            f"&stay[_token]={quote(csrf3, safe='')}"
+        )
         r4 = self._session.post(
             f"{TS_URL}{base}?host={TS_HOST_ID}&step=3",
-            data={
-                "stay[amount]":       f"{amount:.2f}".replace(".", ","),
-                "stay[nightPrice]":   "",
-                "stay[isNightPrice]": "",
-                "stay[_token]":       csrf3,
+            data=body3,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Turbo-Frame":  "main-turbo-frame",
             },
-            headers={"Turbo-Frame": "stay-form-frame"},
         )
         r4.raise_for_status()
-        if "erreur" in r4.text.lower() or "error" in r4.text.lower():
-            raise RuntimeError(f"Server returned an error on step 3: {r4.text[:300]}")
+        errs = re.findall(r'invalid-feedback[^>]*>([^<]+)<', r4.text)
+        errs = [e.strip() for e in errs if e.strip()]
+        if errs:
+            raise RuntimeError(f"Step 3 validation error: {'; '.join(errs)}")
 
     def add_stay(
         self,
@@ -357,6 +371,19 @@ class TaxeSejourClient:
         ids_after = self.get_stay_ids(month.year, month.month, period_id)
         new_ids   = ids_after - ids_before
         return next(iter(new_ids), "")
+
+    def delete_stay(self, stay_id: str) -> bool:
+        """Delete an existing stay declaration.
+
+        The endpoint is a plain GET (no confirmation form). Returns True on
+        success (200), False if the stay was not found (404).
+        """
+        self._ensure_logged_in()
+        r = self._session.get(
+            f"{TS_URL}/v2/host/stay/delete/{TS_REGISTRE_ID}/{stay_id}",
+            headers={"Turbo-Frame": "right-turbo-pane"},
+        )
+        return r.status_code == 200
 
     def update_stay(
         self,

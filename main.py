@@ -243,9 +243,10 @@ def process_month(
     if fill:
         for row, g in zip(rows, all_groups):
             # "error": Beds24 data problem — skip, must fix first.
-            # "add" / "failed": new declaration or retry after failure → add_stay.
+            # "failed": previous submission error — skip, must investigate before retrying.
+            # "add": new declaration → add_stay.
             # "update": declaration exists but taxe differs → update_stay in place.
-            if row.statut not in ("add", "failed", "update") or row.base_ht is None:
+            if row.statut not in ("add", "update") or row.base_ht is None:
                 continue
             try:
                 if row.statut == "update" and row.id_ts:
@@ -421,14 +422,16 @@ def _action_line(rows: list[Row]) -> str:
         n = counts["error"]
         return f"{n} error(s) -- fix in Beds24 before running --fill"
 
+    if counts["failed"] > 0:
+        n = counts["failed"]
+        return f"{n} submission(s) failed -- investigate errors above before retrying --fill"
+
     to_add    = counts["add"]
     to_update = counts["update"]
-    to_retry  = counts["failed"]
-    if to_add + to_update + to_retry > 0:
+    if to_add + to_update > 0:
         parts = []
         if to_add:    parts.append(f"{to_add} to add")
         if to_update: parts.append(f"{to_update} to update")
-        if to_retry:  parts.append(f"{to_retry} to retry")
         return ", ".join(parts) + " -- run --fill"
 
     just_done = counts["added"] + counts["updated"]
