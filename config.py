@@ -1,9 +1,9 @@
-"""Load credentials and site constants from pa.toml."""
+"""Load credentials and site constants from config.toml."""
 
 import sys
 from pathlib import Path
 
-PA_TOML = Path.home() / ".claude" / "pa.toml"
+CONFIG_FILE = Path(__file__).parent / "config.toml"
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -12,7 +12,7 @@ else:
 
 
 def _load() -> dict:
-    with open(PA_TOML, "rb") as f:
+    with open(CONFIG_FILE, "rb") as f:
         return tomllib.load(f)
 
 
@@ -28,16 +28,14 @@ TS_LODGING_ID  = 2216111
 TS_REGISTRE_ID = 1248441  # unique registre for "Gîtes Mosaïques"
 
 # ── Beds24 ────────────────────────────────────────────────────────────────────
-# Prefer [beds24.canbt] key (needs IP whitelisting in Beds24 settings).
-# Falls back to [mosaiques.beds24] which has no IP restriction.
+# [beds24.canbt] key (needs proper IP whitelisting in Beds24 settings).
 BEDS24_API_URL = "https://api.beds24.com/json/"
 
-_b24_canbt    = _cfg.get("beds24", {}).get("canbt", {})
-_b24_mosaiques = _cfg["mosaiques"]["beds24"]
+_b24_canbt = _cfg.get("beds24", {}).get("canbt", {})
 
-BEDS24_API_KEY  = _b24_canbt.get("api_key") or _b24_mosaiques["api_key"]
-# propKey identifies the property; always use mosaiques prop_key regardless of which API key
-BEDS24_PROP_KEY = _b24_mosaiques["prop_key"]
+BEDS24_API_KEY  = _b24_canbt.get("api_key")
+# propKey identifies the property; required by every Beds24 v1 call.
+BEDS24_PROP_KEY = _b24_canbt.get("prop_key")
 
 # Beds24 booking URL (for direct links in reports)
 BEDS24_BOOKING_URL = "https://beds24.com/control2.php?ajax=bookedit&id={book_id}"

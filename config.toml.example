@@ -1,0 +1,8 @@
+[nordbasseterre.taxesejour.fr]
+url      = "https://nordbasseterre.taxesejour.fr/dashboard"
+username = "user@example.com"
+password = "your-password"
+
+[beds24.canbt]
+api_key  = "your-api-key"
+prop_key = "your-prop-key"

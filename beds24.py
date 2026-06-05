@@ -9,9 +9,6 @@ from typing import Optional
 
 import requests
 
-import tomllib
-from pathlib import Path
-
 from config import (
     BEDS24_API_KEY,
     BEDS24_API_URL,
@@ -22,16 +19,6 @@ from config import (
     ht_from_total,
     taxe_sejour,
 )
-
-def _get_fallback_auth() -> dict | None:
-    """Return mosaiques auth dict if available (used when canbt key has IP restriction)."""
-    try:
-        with open(Path.home() / ".claude" / "pa.toml", "rb") as f:
-            cfg = tomllib.load(f)
-        b = cfg["mosaiques"]["beds24"]
-        return {"apiKey": b["api_key"], "propKey": b["prop_key"]}
-    except Exception:
-        return None
 
 
 @dataclass
@@ -171,21 +158,6 @@ def _fetch_raw(year: int, month: int) -> list[dict]:
     resp = requests.post(BEDS24_API_URL + "getBookings", json=payload, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-
-    # IP restriction on canbt key → silent fallback to mosaiques key
-    if isinstance(data, dict) and data.get("errorCode") == "1022":
-        fallback = _get_fallback_auth()
-        if fallback:
-            payload["authentication"] = fallback
-            resp = requests.post(BEDS24_API_URL + "getBookings", json=payload, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-        else:
-            raise RuntimeError(
-                "Clé Beds24 canbt bloquée (IP restriction). "
-                "Désactiver la restriction IP dans les paramètres Beds24, "
-                f"ou ajouter [mosaiques.beds24] dans pa.toml comme fallback."
-            )
 
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(f"Beds24 API error: {data['error']} (code {data.get('errorCode')})")

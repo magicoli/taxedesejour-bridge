@@ -3,3 +3,4 @@ __pycache__/
 /data/**
 !/data/.keep
 .DS_Store
+config.toml
