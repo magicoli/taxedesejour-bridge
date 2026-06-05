@@ -13,4 +13,4 @@ else
     source .venv/bin/activate
 fi
 
-exec python main.py "$@"
+exec $python main.py "$@"
