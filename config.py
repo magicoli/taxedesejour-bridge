@@ -44,15 +44,15 @@ _cfg = _load()
 
 # ── taxesejour.fr ─────────────────────────────────────────────────────────────
 try:
-    _ts = _cfg["nordbasseterre"]["taxesejour"]["fr"]
+    _ts = _cfg["register"]
 except KeyError:
     raise ConfigError(
-        f"Missing [nordbasseterre.taxesejour.fr] section in {CONFIG_FILE.name}"
+        f"Missing [register] section in {CONFIG_FILE.name}"
     )
 
 TS_URL         = "https://nordbasseterre.taxesejour.fr"
-TS_USERNAME    = _require(_ts, "username", "nordbasseterre.taxesejour.fr")
-TS_PASSWORD    = _require(_ts, "password", "nordbasseterre.taxesejour.fr")
+TS_USERNAME    = _require(_ts, "username", "register")
+TS_PASSWORD    = _require(_ts, "password", "register")
 TS_HOST_ID     = 1695931
 TS_LODGING_ID  = 2216111
 TS_REGISTRE_ID = 1248441  # unique registre for "Gîtes Mosaïques"
@@ -60,11 +60,11 @@ TS_REGISTRE_ID = 1248441  # unique registre for "Gîtes Mosaïques"
 # ── Beds24 ────────────────────────────────────────────────────────────────────
 BEDS24_API_URL = "https://api.beds24.com/json/"
 
-_b24_canbt = _cfg.get("beds24", {}).get("canbt", {})
+_b24_canbt = _cfg.get("sources", {}).get("beds24", {})
 
-BEDS24_API_KEY  = _require(_b24_canbt, "api_key",  "beds24.canbt")
+BEDS24_API_KEY  = _require(_b24_canbt, "api_key",  "sources.beds24")
 # propKey identifies the property; required by every Beds24 v1 call.
-BEDS24_PROP_KEY = _require(_b24_canbt, "prop_key", "beds24.canbt")
+BEDS24_PROP_KEY = _require(_b24_canbt, "prop_key", "sources.beds24")
 
 # Beds24 booking URL (for direct links in reports)
 BEDS24_BOOKING_URL = "https://beds24.com/control2.php?ajax=bookedit&id={book_id}"
@@ -105,7 +105,7 @@ def ht_from_total(total_received: float, adults: int, children: int) -> float:
 
 
 def taxe_sejour(net: float, nights: int, adults: int, children: int) -> float:
-    """Taxe de séjour, computed EXACTLY like nordbasseterre.taxesejour.fr:
+    """Taxe de séjour, computed EXACTLY like register:
 
         tarif_nuit = round(net / nights / guests, 2)   # HT per person per night
         taxe_nuit  = round(tarif_nuit * TAXE_RATE, 2)  # per night, rounded

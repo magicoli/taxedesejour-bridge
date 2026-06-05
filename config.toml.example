@@ -1,8 +1,13 @@
-[nordbasseterre.taxesejour.fr]
+[register]
 url      = "https://nordbasseterre.taxesejour.fr/dashboard"
 username = "user@example.com"
 password = "your-password"
 
-[beds24.canbt]
+[sources.beds24]
+
+# api_key:  Beds24 → (SETTINGS) ACCOUNT → ACCOUNT ACCESS → API Key
 api_key  = "your-api-key"
+
+# prop_key: Beds24 → (SETTINGS) PROPERTIES → ACCESS → propKey
+# (deprecated, used for v1 api access)
 prop_key = "your-prop-key"

@@ -16,6 +16,18 @@ plus directement l'info "group invoice" de Beds24 :
 `_same_client` : même email OU (pas d'email des deux côtés ET même nom).
 Si une résa a un email et l'autre pas, pas de fusion même à nom identique.
 
+## Migration Beds24 API v1 → v2
+Le script utilise actuellement l'API v1 (dépréciée), qui exige deux clés :
+`api_key` (ACCOUNT ACCESS) et `prop_key` (PROPERTY ACCESS).
+
+L'API v2 simplifie l'auth : un seul Bearer token, pas de propKey.
+Seuls `_fetch_raw()` et `set_booking_custom1()` dans `beds24.py` sont à réécrire.
+Point d'attention : vérifier le mapping des noms de champs v1 → v2 dans la
+réponse `getBookings` avant de toucher au reste du code.
+
+Doc v2 : https://wiki.beds24.com/index.php/Category:API_V2
+Testeur : https://beds24.com/api/v2/
+
 ## Intégration bokit-light (PHP) — plus tard
 - Logique de calcul centralisée dans `config.py` (fonctions pures portables).
 - Le `Row` / CSV à 16 colonnes = contrat de données stable pour l'import.

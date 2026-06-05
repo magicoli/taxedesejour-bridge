@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Taxe de séjour -- reconciliation Beds24 / nordbasseterre.taxesejour.fr
+"""Taxe de séjour -- reconciliation Beds24 / register
 
 Default mode submits and updates declarations automatically.
 
