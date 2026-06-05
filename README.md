@@ -18,7 +18,7 @@ but should be adaptable for other use cases.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ including matching `python3.xx-venv` (e.g. `sudo apt install python3.11 python3.11-venv`)
 
 ## Setup
 
