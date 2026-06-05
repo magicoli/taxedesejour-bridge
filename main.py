@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Taxe de séjour — réconciliation Beds24 / nordbasseterre.taxesejour.fr
+"""Taxe de séjour -- reconciliation Beds24 / nordbasseterre.taxesejour.fr
+
+Default mode submits and updates declarations automatically.
 
 Usage:
-  ./run.sh                        # tous les mois «À déclarer», dry-run
-  ./run.sh --month 2026-04        # mois spécifique, dry-run
-  ./run.sh --fill                 # soumettre les séjours manquants
-  ./run.sh --recap-only           # récap seul, sans interaction taxesejour.fr
-  ./run.sh --csv recap.csv        # fichier CSV (défaut: recap.csv)
+  ./run.sh                        # all pending months -- submit/update
+  ./run.sh --month 2026-05        # specific month -- submit/update
+  ./run.sh --dry-run              # report only, no submissions
+  ./run.sh --dry-run --month 2026-05
 """
 
 from __future__ import annotations
@@ -31,12 +32,10 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--month", metavar="YYYY-MM")
-    p.add_argument("--fill", action="store_true",
-                   help="Soumettre les séjours manquants")
-    p.add_argument("--recap-only", action="store_true",
-                   help="Récap seul, sans interaction taxesejour.fr")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Report only -- do not submit or update declarations")
     p.add_argument("--no-beds24-note", action="store_true",
-                   help="Ne pas écrire dans custom1 Beds24")
+                   help="Do not write to Beds24 custom1 field after submission")
     return p.parse_args()
 
 
@@ -457,7 +456,7 @@ def print_recap(rows: list[Row], year: int, month: int) -> None:
 
 def main() -> None:
     args       = parse_args()
-    fill       = args.fill and not args.recap_only
+    fill       = not args.dry_run
     write_note = fill and not args.no_beds24_note
 
     records = st.load()
@@ -468,24 +467,29 @@ def main() -> None:
         try:
             year, month = map(int, args.month.split("-"))
         except ValueError:
-            print(f"Format invalide: '{args.month}', attendu YYYY-MM")
+            print(f"Invalid format: '{args.month}', expected YYYY-MM")
             sys.exit(1)
+        # Search all actionable months (including non-"À déclarer" statuses)
+        # to find the period_id. Falls back to explicit lookup if not found.
         all_pending = client.get_pending_months(year)
         match = next(((y, m, pid) for y, m, pid in all_pending
                       if y == year and m == month), None)
-        months = [match] if match else [(year, month, "")]
+        if match is None:
+            # Month not found in pending list — look up period_id directly
+            periods = client._find_periods(year)
+            month_str = f"{year}-{month:02d}-01"
+            pid = next(
+                (pid for pid, months in periods.items() if month_str in months),
+                "",
+            )
+            match = (year, month, pid)
+        months = [match]
     else:
         year   = date.today().year
         months = client.get_pending_months(year)
         if not months:
-            print("Aucun mois «À déclarer» trouvé sur taxesejour.fr.")
+            print("No pending months found on taxesejour.fr.")
             return
-
-    label = ", ".join(date(y, m, 1).strftime("%B %Y") for y, m, _ in months)
-    mode  = "--fill" if fill else "dry-run"
-    # print(f"{'═' * 64}")
-    # print(f"Taxe de séjour — {label}  [{mode}]")
-    # print(f"{'═' * 64}")
 
     for y, m, pid in months:
         month_rows = process_month(y, m, pid, client, records,

@@ -220,16 +220,24 @@ class TaxeSejourClient:
 
         return result
 
-    def get_pending_months(self, year: int) -> list[tuple[int, int, str]]:
-        """Return (year, month, period_id) tuples for months with status 'À déclarer'.
+    # Statuses that indicate a month is closed (already submitted or future).
+    # Anything else is considered actionable (pending declaration).
+    _CLOSED_STATUSES = ("déclaré", "anticipation")
 
-        Skips 'Déclaré' (already closed) and 'En anticipation' (future).
+    def get_pending_months(self, year: int) -> list[tuple[int, int, str]]:
+        """Return (year, month, period_id) for all months that need action.
+
+        Includes 'À déclarer' AND 'Aucune location en direct' (the latter means
+        the site auto-assigned "no direct rentals" because only platform bookings
+        were registered; we may still have Beds24 direct bookings to declare).
+        Skips only months that are truly closed: 'Déclaré' and 'En anticipation'.
         """
         periods = self._find_periods(year)
         pending = []
         for pid, months in periods.items():
             for month_str, status in sorted(months.items()):
-                if "déclarer" in status.lower():
+                sl = status.lower()
+                if not any(c in sl for c in self._CLOSED_STATUSES):
                     y, m, _ = month_str.split("-")
                     pending.append((int(y), int(m), pid))
         return sorted(pending)
