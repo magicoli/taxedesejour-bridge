@@ -483,6 +483,8 @@ def main() -> None:
 
     records = st.load()
     client  = TaxeSejourClient()
+    mode    = "dry-run" if args.dry_run else "fill"
+    print(f"[{mode}] Connecting to taxesejour.fr ...", flush=True)
     client.login()
 
     if args.month:
@@ -514,9 +516,10 @@ def main() -> None:
             return
 
     for y, m, pid in months:
+        month_label = date(y, m, 1).strftime("%B %Y")
+        print(f"[{month_label}] fetching bookings and declarations ...", flush=True)
         month_rows = process_month(y, m, pid, client, records,
                                    fill=fill, write_beds24_note=write_note)
-        month_label = date(y, m, 1).strftime("%B %Y")
         print_run_warnings(month_label, month_rows, y, m)
         print_recap(month_rows, y, m)
 
