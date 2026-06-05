@@ -1,4 +1,4 @@
-# Bridge Beds24 - Taxedesejour.fr
+# Beds24 - Taxedesejour.fr Bridge
 
 Reconciles direct Beds24 bookings with tourist tax declarations on
 [nordbasseterre.taxesejour.fr](https://nordbasseterre.taxesejour.fr).
