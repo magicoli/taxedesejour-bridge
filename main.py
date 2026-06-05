@@ -316,28 +316,18 @@ def process_month(
 # ── Per-run output (ONLY warnings/errors, one line each) ──────────────────────
 
 def print_run_warnings(month_label: str, rows: list[Row], year: int, month: int) -> None:
-    month_key = f"{year}-{month:02d}"
-    error_rows  = [r for r in rows if r.errors]
-    notif_rows  = [r for r in rows if r.notifications]
+    """Print month header and informational notifications (before the table).
 
-    if error_rows:
-        n_err    = sum(1 for r in error_rows if r.statut == "error")
-        n_failed = sum(1 for r in error_rows if r.statut == "failed")
-        parts = []
-        if n_err:    parts.append(f"{n_err} error(s)")
-        if n_failed: parts.append(f"{n_failed} failed")
-        print(f"\n{month_key}: {', '.join(parts)} -- fix in source before running")
-        for row in error_rows:
-            for detail in row.error_details:
-                print(f"-> {detail}")
-
-    if notif_rows:
-        print(f"\n-- {month_key}")
-        for row in notif_rows:
-            prefix = (f"{row.check_in.strftime('%d/%m/%y')}->"
-                      f"{row.check_out.strftime('%d/%m/%y')} [{row.units}]")
-            for n in row.notifications:
-                print(f"{prefix}  {n}")
+    Error summaries and -> detail lines are printed AFTER the table by print_recap.
+    """
+    print(f"\n-- {month_label}")
+    for row in rows:
+        if not row.notifications:
+            continue
+        prefix = (f"{row.check_in.strftime('%d/%m/%y')}->"
+                  f"{row.check_out.strftime('%d/%m/%y')} [{row.units}]")
+        for n in row.notifications:
+            print(f"{prefix}  {n}")
 
 
 # ── Recap table ───────────────────────────────────────────────────────────────
@@ -454,7 +444,7 @@ def _action_line(rows: list[Row], year: int, month: int) -> str:
         parts = []
         if counts["error"]:  parts.append(f"{counts['error']} error(s)")
         if counts["failed"]: parts.append(f"{counts['failed']} failed")
-        return f"{prefix}: {', '.join(parts)} -- fix in source before running"
+        return f"{prefix}: {', '.join(parts)}, some records need to be fixed in source before submitting"
 
     to_add    = counts["add"]
     to_update = counts["update"]
@@ -466,7 +456,7 @@ def _action_line(rows: list[Row], year: int, month: int) -> str:
 
     n_ready = counts["ready"] + counts["added"] + counts["updated"]
     if n_ready > 0:
-        return f"{prefix}: {n_ready} declaration(s) ready to submit on taxesejour.fr"
+        return f"{prefix}: {n_ready} declarations ready to submit on taxesejour.fr"
 
     # Only n/a and platform entries -- nothing declarable
     return f"{prefix}: no declarations for this month -- submit an empty declaration on taxesejour.fr"
@@ -476,7 +466,11 @@ def print_recap(rows: list[Row], year: int, month: int) -> None:
     rows = sorted(rows, key=lambda r: (r.check_in, r.check_out))
     acc  = _totals(rows)
     _render_terminal(rows, acc)
-    print(f"\n-> {_action_line(rows, year, month)}")
+    print(f"\n{_action_line(rows, year, month)}")
+    # Error detail lines follow the action summary (-> per affected booking)
+    for row in rows:
+        for detail in row.error_details:
+            print(f"-> {detail}")
     _write_csv(rows, acc, _csv_path(year, month))
 
 
